@@ -1,3 +1,4 @@
+from app.core.schemas import APIResponse
 import uuid
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +13,7 @@ from app.features.chat.schema import (
 router = APIRouter(tags=["Chat"])
 
 
-@router.post("/sessions", response_model=ChatSessionResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/sessions", response_model=APIResponse[ChatSessionResponse], status_code=status.HTTP_201_CREATED)
 async def create_session(
     data: ChatSessionCreate,
     db: AsyncSession = Depends(get_db),
@@ -20,10 +21,14 @@ async def create_session(
 ):
     """Create a new chat session in a notebook."""
     service = ChatService(db)
-    return await service.create_session(data, current_user.id)
+    data = await service.create_session(data, current_user.id)
+    return APIResponse(
+        message="Chat session created successfully",
+        data=data
+    )
 
 
-@router.get("/sessions", response_model=ChatSessionListResponse)
+@router.get("/sessions", response_model=APIResponse[ChatSessionListResponse])
 async def list_sessions(
     notebook_id: uuid.UUID = Query(..., description="Filter by notebook"),
     page: int = Query(1, ge=1),
@@ -33,7 +38,11 @@ async def list_sessions(
 ):
     """List chat sessions in a notebook (paginated)."""
     service = ChatService(db)
-    return await service.list_sessions(notebook_id, current_user.id, page=page, size=size)
+    data = await service.list_sessions(notebook_id, current_user.id, page=page, size=size)
+    return APIResponse(
+        message="Chat sessions listed successfully",
+        data=data
+    )
 
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -47,7 +56,7 @@ async def delete_session(
     await service.delete_session(session_id, current_user.id)
 
 
-@router.get("/sessions/{session_id}/messages", response_model=MessageListResponse)
+@router.get("/sessions/{session_id}/messages", response_model=APIResponse[MessageListResponse])
 async def get_messages(
     session_id: uuid.UUID,
     page: int = Query(1, ge=1),
@@ -57,10 +66,14 @@ async def get_messages(
 ):
     """Get all messages in a chat session (paginated)."""
     service = ChatService(db)
-    return await service.get_messages(session_id, current_user.id, page=page, size=size)
+    data = await service.get_messages(session_id, current_user.id, page=page, size=size)
+    return APIResponse(
+        message="All messages fetched successfully",
+        data=data
+    )
 
 
-@router.post("/sessions/{session_id}/messages", response_model=AskResponse)
+@router.post("/sessions/{session_id}/messages", response_model=APIResponse[AskResponse])
 async def send_message(
     session_id: uuid.UUID,
     data: MessageRequest,
@@ -69,10 +82,14 @@ async def send_message(
 ):
     """Send a question and get an AI answer with citations."""
     service = ChatService(db)
-    return await service.send_message(session_id, data.question, current_user.id)
+    data = await service.send_message(session_id,current_user.id, data.question,data.excluded_source_ids)
+    return APIResponse(
+        message="Question answered successfully by AI",
+        data=data
+    )
 
 
-@router.post("/sessions/{session_id}/clear-memory")
+@router.put("/sessions/{session_id}/clear-memory")
 async def clear_memory(
     session_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
@@ -80,7 +97,10 @@ async def clear_memory(
 ):
     """Clear AI memory summaries. Messages are preserved."""
     service = ChatService(db)
-    return await service.clear_memory(session_id, current_user.id)
+    await service.clear_memory(session_id, current_user.id)
+    return APIResponse(
+        message="Memory cleared. Messages preserved",
+    )
 
 
 @router.get("/sessions/{session_id}/memory-status", response_model=MemoryStatusResponse)
@@ -91,4 +111,8 @@ async def memory_status(
 ):
     """Get memory status for a chat session."""
     service = ChatService(db)
-    return await service.get_memory_status(session_id, current_user.id)
+    status = await service.get_memory_status(session_id, current_user.id)
+    return APIResponse(
+        message="Memory status fetched successfully",
+        data=status
+    )

@@ -1,3 +1,4 @@
+from pydantic import HttpUrl
 from typing import Tuple
 from datetime import datetime
 import uuid
@@ -20,6 +21,20 @@ class SourceStatus(str, Enum):
     READY = "ready"
     ERROR = "error"
 
+class TargetURL(BaseModel):
+    url: HttpUrl
+
+    @field_validator('url', mode='before')
+    @classmethod
+    def ensure_scheme(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            # Clean up accidental spaces
+            v = v.strip()
+            # If it doesn't start with http or https, assume https
+            if not v.startswith(('http://', 'https://')):
+                return f"https://{v}"
+        return v
+
 
 # ---- Source-specific data models ----
 
@@ -33,14 +48,14 @@ class UploadSourceData(BaseModel):
 
 
 class WebsiteSourceData(BaseModel):
-    url: str
+    url: TargetURL
     title: str
     content: str = ""
     word_count: int = 0
 
 
 class YouTubeSourceData(BaseModel):
-    url: str
+    url: TargetURL
     video_id: str  
     thumbnail_url: Optional[str] = None
     language: str = "en"
@@ -77,8 +92,8 @@ class SourceCreate(BaseModel):
 
 class NoteCreateRequest(BaseModel):
     notebook_id: uuid.UUID
-    title: str = Field(..., max_length=500)
-    content: str
+    title: str = Field(..., max_length=255)
+    content: str = Field(..., max_length=20000)
 
 class SourceUploadResponse(BaseModel):
     id: uuid.UUID
@@ -86,7 +101,6 @@ class SourceUploadResponse(BaseModel):
     title: str
     source_type: SourceType
     status: SourceStatus
-    message: str = "Source uploaded. Indexing in background."
 
 
 class SourceResponse(BaseModel):

@@ -46,17 +46,11 @@ async def index_source_background(
                     os.unlink(file_path)  # clean up temporary file
                 title = file_name
 
-            elif source_type == SourceType.WEBSITE:
+            elif source_type == SourceType.WEBSITE or source_type == SourceType.YOUTUBE:
                 url = kwargs.get("url")
-                # Placeholder: implement webpage extraction
-                markdown_text = f"Content from {url} (to be implemented)"
-                title = url
-
-            elif source_type == SourceType.YOUTUBE:
-                url = kwargs.get("url")
-                # Placeholder: implement transcript fetch
-                markdown_text = f"Transcript from {url} (to be implemented)"
-                title = url
+                content = kwargs.get("content")
+                title = kwargs.get("title")
+                markdown_text = content
 
             elif source_type == SourceType.TOPIC:
                 topic = kwargs.get("topic")
@@ -108,11 +102,11 @@ async def index_source_background(
 
             client.upsert(collection_name=collection, points=points)
             await source_repo.update_status(
-                source_id, SourceStatus.READY,
+                source_id,notebook_id, SourceStatus.READY,
                 total_chunks=len(points),
             )
             logger.info(f"Indexed {len(points)} chunks for source {source_id} ({source_type})")
 
         except Exception as e:
             logger.error(f"Indexing failed for {source_id}: {e}", exc_info=True)
-            await source_repo.update_status(source_id, SourceStatus.ERROR, error_message=str(e))
+            await source_repo.update_status(source_id, notebook_id, SourceStatus.ERROR, error_message=str(e))

@@ -1,16 +1,11 @@
-"""Chat service — sessions, RAG query with memory, persistent messages."""
+"""Chat service — sessions, DB management, persistent messages."""
 
 import json
 import uuid
-from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
 
-from app.core.config import settings
-from app.core.ai_clients import get_qdrant_client, get_embeddings, get_llm
+from app.core.ai_clients import get_llm
 from app.core.logger import logger
 from app.core.exceptions import NotFoundException
 
@@ -20,43 +15,13 @@ from app.features.chat.repository import ChatSessionRepository, ChatMessageRepos
 from app.features.chat.model import ChatSession, ChatMessage, MemorySummary
 from app.features.chat.schema import (
     ChatSessionCreate, ChatSessionResponse, ChatSessionListResponse,
-    ChatMessageResponse, MessageListResponse, AskResponse, CitationDetail,
+    HumanMessageResponse, AssistantMessageResponse, MessageListResponse, AskResponse, CitationDetail,
     MemoryStatusResponse,
 )
 from app.features.chat.memory import ConversationMemory, summarise_memory
 
-
-_RAG_PROMPT_WITH_HISTORY = ChatPromptTemplate.from_template(
-    'You are a professional document analyst with memory of this conversation.\n'
-    'Use the conversation history to resolve pronouns and follow-up references.\n'
-    'Use the document context to answer factually.\n'
-    'Do NOT mention file names or page numbers in your answer.\n'
-    'If the answer is not in the context, say "I could not find that in the documents."\n'
-    '\n'
-    '--- Conversation History ---\n'
-    '{history}\n'
-    '\n'
-    '--- Document Context ---\n'
-    '{context}\n'
-    '\n'
-    'Current question: {question}\n'
-    '\n'
-    'Answer:'
-)
-
-_RAG_PROMPT_NO_HISTORY = ChatPromptTemplate.from_template(
-    'You are a precise document analyst.\n'
-    'Answer the question using ONLY the document context below.\n'
-    'Do NOT mention file names or page numbers in your answer.\n'
-    'If the answer is not in the context, say "I could not find that in the documents."\n'
-    '\n'
-    '--- Document Context ---\n'
-    '{context}\n'
-    '\n'
-    'Question: {question}\n'
-    '\n'
-    'Answer:'
-)
+# Import the extracted AI Engine
+from app.features.chat.ai import RAGEngine
 
 
 class ChatService:
@@ -122,18 +87,25 @@ class ChatService:
 
     # ── RAG Query ─────────────────────────────────────────────────────────────
 
-    async def send_message(self, session_id: uuid.UUID, question: str, user_id: uuid.UUID) -> AskResponse:
-        """Full RAG pipeline with conversational memory."""
+    async def send_message(self, session_id: uuid.UUID, user_id: uuid.UUID, question: str, excluded_source_ids: list[str]) -> AskResponse:
+        """Full RAG pipeline with conversational memory orchestrating AI logic."""
         session = await self.session_repo.get_by_id(session_id, user_id)
         if not session:
             raise NotFoundException(f"Chat session {session_id} not found")
 
         notebook_id = session.notebook_id
+        all_source_ids = await self.source_repo.get_source_ids_for_notebook(notebook_id, user_id)
 
-        # Get source_ids for this notebook
-        source_ids = await self.source_repo.get_source_ids_for_notebook(notebook_id, user_id)
+        if not all_source_ids:
+            raise NotFoundException("No source available for the notebook")
 
-        # Reconstruct memory from DB
+        excluded_set = set(excluded_source_ids)
+        source_ids = [sid for sid in all_source_ids if sid not in excluded_set]
+
+        if not source_ids:
+           raise NotFoundException("No source selected for the query")
+
+        # 1. Reconstruct Memory
         latest_summary = await self.summary_repo.get_latest(session_id, user_id)
         after_msg_id = latest_summary.summarised_up_to_message_id if latest_summary else None
         active_msgs = await self.message_repo.get_active_messages(
@@ -144,7 +116,7 @@ class ChatService:
             latest_summary.summary_text if latest_summary else None,
         )
 
-        # Auto-summarise if needed
+        # 2. Auto-summarise if needed
         llm = get_llm()
         if memory.should_summarise():
             new_summary_text = summarise_memory(memory, llm)
@@ -162,66 +134,12 @@ class ChatService:
                 summarised_up_to_message_id=new_summarised_up_to_id,
             ))
 
-        # Semantic search in Qdrant
-        citations: list[CitationDetail] = []
-        context_parts: list[str] = []
-
-        if source_ids:
-            try:
-                embeddings = get_embeddings()
-                client = get_qdrant_client()
-                collection = settings.QDRANT_COLLECTION
-
-                query_vector = embeddings.embed_query(question)
-                # FIXED: user_id as string for Qdrant filter
-                search_filter = Filter(must=[
-                    FieldCondition(key='user_id', match=MatchValue(value=str(user_id))),
-                    FieldCondition(key='source_id', match=MatchAny(any=source_ids)),
-                ])
-
-                results = client.query_points(
-                    collection_name=collection,
-                    query=query_vector,
-                    query_filter=search_filter,
-                    limit=settings.RETRIEVER_K,
-                    with_payload=True,
-                    with_vectors=False,
-                )
-
-                for hit in results.points:
-                    p = hit.payload
-                    citations.append(CitationDetail(
-                        file_name=p['file_name'],
-                        page_number=p['page_number'],
-                        chunk_index=p['chunk_index'],
-                        similarity_score=round(hit.score, 4),
-                        source_id=p['source_id'],
-                        is_table=p.get('is_table', False),
-                        chunk_text=p['chunk_text'],
-                    ))
-                    context_parts.append(
-                        f"[{p['file_name']} | page {p['page_number']}]\n{p['chunk_text']}"
-                    )
-            except Exception as e:
-                logger.error(f"Qdrant search error: {e}", exc_info=True)
-
-        # Build prompt and call LLM
-        context = '\n\n---\n\n'.join(context_parts) if context_parts else "No documents available."
+        # 3. AI Execution (Delegated to RAGEngine)
         history_block = memory.build_history_block()
-        used_memory = bool(history_block)
+        context, citations = RAGEngine.retrieve_context(question, user_id, source_ids)
+        answer, used_memory = RAGEngine.generate_answer(question, context, history_block)
 
-        if used_memory:
-            chain = _RAG_PROMPT_WITH_HISTORY | llm | StrOutputParser()
-            answer = chain.invoke({
-                'history': history_block,
-                'context': context,
-                'question': question,
-            })
-        else:
-            chain = _RAG_PROMPT_NO_HISTORY | llm | StrOutputParser()
-            answer = chain.invoke({'context': context, 'question': question})
-
-        # Save messages
+        # 4. Save to Database
         human_msg = await self.message_repo.create(ChatMessage(
             session_id=session_id,
             user_id=user_id,
@@ -252,7 +170,7 @@ class ChatService:
         if not session:
             raise NotFoundException(f"Chat session {session_id} not found")
         await self.summary_repo.delete_by_session(session_id, user_id)
-        return {"message": "Memory cleared. Messages preserved."}
+        return
 
     async def get_memory_status(self, session_id: uuid.UUID, user_id: uuid.UUID) -> MemoryStatusResponse:
         session = await self.session_repo.get_by_id(session_id, user_id)
@@ -272,7 +190,16 @@ class ChatService:
     # ── Helpers ────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _format_message(msg: ChatMessage) -> ChatMessageResponse:
+    def _format_message(msg: ChatMessage) -> HumanMessageResponse | AssistantMessageResponse:
+        if msg.role == "human":
+            return HumanMessageResponse(
+                id=msg.id,
+                session_id=msg.session_id,
+                role="human",
+                content=msg.content,
+                created_at=msg.created_at,
+            )
+            
         citations = []
         if msg.citations_json:
             try:
@@ -280,10 +207,10 @@ class ChatService:
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        return ChatMessageResponse(
+        return AssistantMessageResponse(
             id=msg.id,
             session_id=msg.session_id,
-            role=msg.role,
+            role="assistant",
             content=msg.content,
             citations=citations,
             used_memory=msg.used_memory,

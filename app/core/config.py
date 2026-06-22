@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     IMAGEKIT_PUBLIC_KEY: str = ''
     IMAGEKIT_URL_ENDPOINT: str = ''
 
+
+    TAVILY_API_KEY: str = ''
+    TAVILY_MAX_RESULTS: int = 5
+
+    # ── YouTube ────────────────────────────────────────────────────────────────
+    YOUTUBE_DATA_API_KEY: str = ''
+
     # ── Helpers ────────────────────────────────────────────────────────────────
     @property
     def async_database_url(self) -> str:

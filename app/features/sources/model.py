@@ -28,7 +28,7 @@ class Source(Base):
     notebook_id = Column(UUID(as_uuid=True), ForeignKey("notebooks.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
 
-    source_id = Column(String(32), unique=True, index=True, nullable=False)
+    source_id = Column(String(32), index=True, nullable=False)
     source_type = Column(Enum(SourceType), nullable=False)
     title = Column(String(500), nullable=False)
 
