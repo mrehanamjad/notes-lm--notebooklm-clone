@@ -158,7 +158,6 @@ class ChatService:
             citations_json=citations_json,
             used_memory=used_memory,
         )
-
         try:
             human_msg, assistant_msg = await self.message_repo.save_message_turn(human_msg, assistant_msg)
         except Exception as e:

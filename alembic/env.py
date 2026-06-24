@@ -16,6 +16,7 @@ from app.features.users.model import User                               # noqa: 
 from app.features.notebooks.model import Notebook                       # noqa: F401
 from app.features.sources.model import Source              # noqa: F401
 from app.features.chat.model import ChatSession, ChatMessage, MemorySummary  # noqa: F401
+from app.features.artifacts.model import Artifact                            # noqa: F401
 
 from app.core.config import settings
 

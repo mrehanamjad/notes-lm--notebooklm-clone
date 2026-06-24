@@ -15,7 +15,6 @@ class SourceType(str, enum.Enum):
 
 
 class SourceStatus(str, enum.Enum):
-    PENDING = "pending"
     PROCESSING = "processing"
     READY = "ready"
     ERROR = "error"
@@ -32,7 +31,7 @@ class Source(Base):
     source_type = Column(Enum(SourceType), nullable=False)
     title = Column(String(500), nullable=False)
 
-    status = Column(Enum(SourceStatus), default=SourceStatus.PENDING)
+    status = Column(Enum(SourceStatus), default=SourceStatus.READY)
     error_message = Column(Text, nullable=True)
 
     source_data = Column(JSONB, nullable=False, default=dict, server_default='{}')

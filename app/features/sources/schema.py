@@ -24,7 +24,6 @@ class SourceType(str, Enum):
     NOTE = "note"
 
 class SourceStatus(str, Enum):
-    PENDING = "pending"
     PROCESSING = "processing"
     READY = "ready"
     ERROR = "error"

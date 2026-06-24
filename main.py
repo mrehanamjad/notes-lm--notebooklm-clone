@@ -8,6 +8,7 @@ from app.features.users.model import User
 from app.features.notebooks.model import Notebook
 from app.features.sources.model import Source
 from app.features.chat.model import ChatSession, ChatMessage, MemorySummary
+from app.features.artifacts.model import Artifact
 
 # ── Import Core Schemas and Exceptions ────────────────────────────────────────
 from app.core.exceptions import AppException
@@ -18,6 +19,7 @@ from app.features.users.router import router as users_router
 from app.features.notebooks.router import router as notebooks_router
 from app.features.sources.router import router as sources_router
 from app.features.chat.router import router as chat_router
+from app.features.artifacts.router import router as artifacts_router
 
 app = FastAPI(
     title="LM Notes API",
@@ -66,6 +68,7 @@ app.include_router(users_router, prefix="/api/v1/users")
 app.include_router(notebooks_router, prefix="/api/v1/notebooks")
 app.include_router(sources_router, prefix="/api/v1/sources")
 app.include_router(chat_router, prefix="/api/v1/chat")
+app.include_router(artifacts_router, prefix="/api/v1/notebooks")
 
 
 @app.get("/")
