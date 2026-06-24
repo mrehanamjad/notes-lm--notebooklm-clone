@@ -1,6 +1,7 @@
 """AI RAG Engine — semantic search and LLM generation."""
 
-import logging
+from app.core.logger import logger
+from app.core.exceptions import InternalServerError
 import uuid
 from typing import Tuple, List
 
@@ -12,7 +13,6 @@ from app.core.config import settings
 from app.core.ai_clients import get_qdrant_client, get_embeddings, get_llm
 from app.features.chat.schema import CitationDetail
 
-logger = logging.getLogger(__name__)
 
 _RAG_PROMPT_WITH_HISTORY = ChatPromptTemplate.from_template(
     'You are a professional document analyst with memory of this conversation.\n'
@@ -105,15 +105,22 @@ class RAGEngine:
         llm = get_llm()
         used_memory = bool(history_block)
 
-        if used_memory:
-            chain = _RAG_PROMPT_WITH_HISTORY | llm | StrOutputParser()
-            answer = chain.invoke({
-                'history': history_block,
-                'context': context,
-                'question': question,
-            })
-        else:
-            chain = _RAG_PROMPT_NO_HISTORY | llm | StrOutputParser()
-            answer = chain.invoke({'context': context, 'question': question})
+        try:
+            if used_memory:
+                chain = _RAG_PROMPT_WITH_HISTORY | llm | StrOutputParser()
+                answer = chain.invoke({
+                    'history': history_block,
+                    'context': context,
+                    'question': question,
+                })
+            else:
+                chain = _RAG_PROMPT_NO_HISTORY | llm | StrOutputParser()
+                answer = chain.invoke({'context': context, 'question': question})
+        except Exception as e:
+            logger.error(f"LLM Generation failed: {e}", exc_info=True)
+            raise InternalServerError(
+                message="The AI engine is currently overloaded or unavailable. Please try again.",
+                details={"reason": str(e)}
+            )
 
         return answer, used_memory

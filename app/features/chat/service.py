@@ -1,5 +1,6 @@
 """Chat service — sessions, DB management, persistent messages."""
 
+from app.core.exceptions import InternalServerError
 import json
 import uuid
 
@@ -140,23 +141,32 @@ class ChatService:
         answer, used_memory = RAGEngine.generate_answer(question, context, history_block)
 
         # 4. Save to Database
-        human_msg = await self.message_repo.create(ChatMessage(
+        human_msg = ChatMessage(
             session_id=session_id,
             user_id=user_id,
             role="human",
             content=question,
             used_memory=False,
-        ))
+        )
 
         citations_json = json.dumps([c.model_dump() for c in citations]) if citations else None
-        assistant_msg = await self.message_repo.create(ChatMessage(
+        assistant_msg = ChatMessage(
             session_id=session_id,
             user_id=user_id,
             role="assistant",
             content=answer,
             citations_json=citations_json,
             used_memory=used_memory,
-        ))
+        )
+
+        try:
+            human_msg, assistant_msg = await self.message_repo.save_message_turn(human_msg, assistant_msg)
+        except Exception as e:
+            logger.error(f"Failed to save chat messages: {e}")
+            raise InternalServerError(
+                message="Failed to save conversation state due to database transaction failure.",
+                details={"reason": str(e)}
+            )
 
         return AskResponse(
             human_message=self._format_message(human_msg),

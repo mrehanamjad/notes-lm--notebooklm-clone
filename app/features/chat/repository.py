@@ -87,11 +87,31 @@ class ChatMessageRepository:
             ChatMessage.session_id == session_id,
             ChatMessage.user_id == user_id
         )
+        
         if after_message_id is not None:
-            query = query.where(ChatMessage.id > after_message_id)  # Works with UUID
+            # Use a subquery to get the timestamp, since UUIDv4 cannot be sorted
+            subq = select(ChatMessage.created_at).where(ChatMessage.id == after_message_id).scalar_subquery()
+            query = query.where(ChatMessage.created_at > subq)
+            
         query = query.order_by(ChatMessage.created_at.asc())
         result = await self.db.execute(query)
         return list(result.scalars().all())
+
+    async def save_message_turn(self, human_msg: ChatMessage, assistant_msg: ChatMessage) -> tuple[ChatMessage, ChatMessage]:
+        """Atomically saves both the human question and AI answer."""
+        try:
+            self.db.add(human_msg)
+            self.db.add(assistant_msg)
+            
+            await self.db.commit()
+            
+            await self.db.refresh(human_msg)
+            await self.db.refresh(assistant_msg)
+            
+            return human_msg, assistant_msg
+        except Exception as e:
+            await self.db.rollback()
+            raise e # Let the service layer catch and log this
 
 
 class MemorySummaryRepository:

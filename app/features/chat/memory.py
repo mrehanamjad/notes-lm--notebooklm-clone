@@ -28,21 +28,25 @@ class ConversationMemory:
         messages: list,
         latest_summary_text: Optional[str] = None,
     ) -> "ConversationMemory":
-        """Rebuild memory from recent ChatMessage rows + latest MemorySummary."""
         memory = cls()
         if latest_summary_text:
             memory.rolling_summary = latest_summary_text
 
-        # Pair up human/assistant messages into turns
         i = 0
-        while i < len(messages) - 1:
-            if messages[i].role == "human" and messages[i + 1].role == "assistant":
-                memory.turns.append(Turn(
-                    question=messages[i].content,
-                    answer=messages[i + 1].content,
-                ))
-                i += 2
+        while i < len(messages):
+            if messages[i].role == "human":
+                # Look for the immediate next assistant message
+                if i + 1 < len(messages) and messages[i + 1].role == "assistant":
+                    memory.turns.append(Turn(
+                        question=messages[i].content,
+                        answer=messages[i + 1].content,
+                    ))
+                    i += 2 # Skip the matched assistant message
+                else:
+                    # Dangling human message (no assistant reply followed)
+                    i += 1 
             else:
+                # Dangling assistant message (e.g., first message in array is an orphan)
                 i += 1
 
         return memory
