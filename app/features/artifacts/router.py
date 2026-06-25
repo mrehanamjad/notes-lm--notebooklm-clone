@@ -1,25 +1,27 @@
-from fastapi import BackgroundTasks
-from app.features.artifacts.schema import ArtifactType
-from fastapi import Query
-from typing import Optional
-from app.features.artifacts.schema import StudyGuideCreateRequest
-from app.features.artifacts.schema import SummaryCreateRequest
-from app.features.artifacts.schema import MindMapCreateRequest
-from app.features.artifacts.schema import SlideDeckCreateRequest
 import uuid
-from fastapi import APIRouter, Depends, status
+from typing import Optional
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.schemas import APIResponse
 from app.core.deps import get_db, get_current_user
 from app.features.users.model import User
 from app.features.artifacts.service import ArtifactService
+
+# ── Unified Schema Imports ───────────────────────────────────────────────────
 from app.features.artifacts.schema import (
+    ArtifactType,
+    ArtifactStatus,
+    ArtifactResponse,
+    ArtifactListResponse,
     QuizCreateRequest,
     FlashcardCreateRequest,
     FAQCreateRequest,
-    ArtifactResponse,
-    ArtifactListResponse,
+    StudyGuideCreateRequest,
+    SummaryCreateRequest,
+    MindMapCreateRequest,
+    SlideDeckCreateRequest,
 )
 
 router = APIRouter(tags=["Artifacts"])
@@ -171,6 +173,29 @@ async def create_slide_deck(
         data=artifact,
     )
 
+@router.post(
+    "/{notebook_id}/artifacts/{artifact_id}/retry",
+    response_model=APIResponse[ArtifactResponse],
+    status_code=status.HTTP_202_ACCEPTED
+)
+
+async def retry_artifact(
+    notebook_id: uuid.UUID,
+    artifact_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Retry a failed artifact generation task."""
+    service = ArtifactService(db)
+    artifact = await service.retry_artifact_generation(
+        notebook_id, artifact_id, current_user.id, background_tasks
+    )
+    return APIResponse(
+        message="Artifact retry has been initiated successfully",
+        data=artifact,
+    )
+
 
 # ── Generic Artifact Routes ────────────────────────────────────────────────────
 
@@ -181,7 +206,7 @@ async def create_slide_deck(
 async def list_artifacts(
     notebook_id: uuid.UUID,
     artifact_type: Optional[ArtifactType] = Query(None, description="Filter by artifact type"),
-    status_filter: Optional[str] = Query(None, description="Filter by status"),
+    status_filter: Optional[ArtifactStatus] = Query(None, description="Filter by status"),
     limit: int = Query(20, ge=1, le=100, description="Number of artifacts to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     db: AsyncSession = Depends(get_db),
@@ -193,6 +218,7 @@ async def list_artifacts(
         notebook_id, 
         current_user.id,
         artifact_type=artifact_type,
+        status_filter=status_filter,
         limit=limit,
         offset=offset,
     )

@@ -3,9 +3,11 @@
 
 import uuid
 from typing import Optional, List
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.features.artifacts.model import Artifact, ArtifactType, ArtifactStatus
+
+from app.features.artifacts.model import Artifact
+from app.features.artifacts.schema import ArtifactType, ArtifactStatus
 
 
 class ArtifactRepository:
@@ -99,7 +101,6 @@ class ArtifactRepository:
         limit: Optional[int] = None,
     ) -> List[Artifact]:
         """Find all artifacts that include a specific source."""
-        # PostgreSQL JSONB contains operator for array
         query = select(Artifact).where(
             Artifact.user_id == user_id,
             Artifact.included_sources.contains([source_id])
@@ -117,7 +118,6 @@ class ArtifactRepository:
         user_id: uuid.UUID,
     ) -> List[Artifact]:
         """Find all artifacts that include any of the given sources."""
-        # PostgreSQL JSONB overlaps operator (?|)
         query = select(Artifact).where(
             Artifact.user_id == user_id,
             Artifact.included_sources.overlap(source_ids)
@@ -177,20 +177,14 @@ class ArtifactRepository:
         user_id: uuid.UUID
     ) -> int:
         """Delete all artifacts for a notebook. Returns count deleted."""
-        result = await self.db.execute(
-            select(Artifact).where(
-                Artifact.notebook_id == notebook_id,
-                Artifact.user_id == user_id,
-            )
+        # Highly optimized bulk delete statement
+        query = delete(Artifact).where(
+            Artifact.notebook_id == notebook_id,
+            Artifact.user_id == user_id,
         )
-        artifacts = list(result.scalars().all())
-        count = len(artifacts)
-        
-        for artifact in artifacts:
-            await self.db.delete(artifact)
-        
+        result = await self.db.execute(query)
         await self.db.commit()
-        return count
+        return result.rowcount
 
     # ── Bulk Operations ────────────────────────────────────────────────────────
     

@@ -22,7 +22,6 @@ class ArtifactPromptBuilder:
     def build_evidence_compression_prompt(
         artifact_type: str,
         context_text: str,
-        topic: str | None = None,
         prompt: str | None = None,
     ) -> str:
         """
@@ -31,21 +30,12 @@ class ArtifactPromptBuilder:
         Args:
             artifact_type: Type of artifact being generated
             context_text: The retrieved context text
-            topic: Optional user-provided topic
             prompt: Optional user-provided prompt/instructions
             
         Returns:
             A formatted prompt string for the LLM
         """
-        user_focus = []
-        if topic:
-            user_focus.append(f"Topic: {topic}")
-        if prompt:
-            user_focus.append(f"User request: {prompt}")
-
-        focus_text = "\n".join(user_focus).strip()
-        if not focus_text:
-            focus_text = "No extra topic/prompt provided."
+        focus_text = f"User request: {prompt.strip()}" if prompt and prompt.strip() else "No extra prompt provided."
 
         return f"""
 You are compressing grounded study material for later artifact generation.
@@ -63,7 +53,6 @@ User focus:
 Return STRICT JSON only with this shape:
 {{
   "title": "Evidence Pack",
-  "topic": "string or null",
   "facts": [
     {{
       "fact": "grounded fact",
@@ -100,7 +89,6 @@ Source context:
     def build_generation_prompt(
         artifact_type: str,
         evidence_pack_json: str,
-        topic: str | None = None,
         prompt: str | None = None,
         options: Optional[Dict[str, Any]] = None,
     ) -> str:
@@ -110,7 +98,6 @@ Source context:
         Args:
             artifact_type: Type of artifact to generate
             evidence_pack_json: JSON string of the compressed evidence pack
-            topic: Optional user-provided topic
             prompt: Optional user-provided prompt/instructions
             options: Additional options specific to the artifact type
             
@@ -134,7 +121,6 @@ Source context:
         if builder:
             return builder(
                 evidence_pack_json=evidence_pack_json,
-                topic=topic,
                 prompt=prompt,
                 options=options,
             )
@@ -142,7 +128,6 @@ Source context:
         # Default to summary if artifact type not found
         return ArtifactPromptBuilder._build_summary_prompt(
             evidence_pack_json=evidence_pack_json,
-            topic=topic,
             prompt=prompt,
             options=options,
         )
@@ -154,7 +139,6 @@ Source context:
     @staticmethod
     def _build_quiz_prompt(
         evidence_pack_json: str,
-        topic: str | None,
         prompt: str | None,
         options: Dict[str, Any],
     ) -> str:
@@ -172,48 +156,27 @@ Goal:
 - Cover multiple concepts if possible.
 - Prefer concept understanding over superficial trivia.
 
-User topic: {topic or "N/A"}
 User request: {prompt or "N/A"}
 Requested question count: {question_count}
 Difficulty: {difficulty}
 
-Return STRICT JSON only in this shape:
-{{
-  "title": "Quiz title",
-  "description": "Short description or null",
-  "questions": [
-    {{
-      "question": "Question text",
-      "type": "mcq",
-      "options": [
-        {{"id": "A", "text": "option 1"}},
-        {{"id": "B", "text": "option 2"}},
-        {{"id": "C", "text": "option 3"}},
-        {{"id": "D", "text": "option 4"}}
-      ],
-      "answer": "A",
-      "explanation": "Grounded explanation"
-    }}
-  ]
-}}
-
 Rules:
-- Generate exactly {question_count} questions
-- Prefer MCQs
-- 4 options per MCQ
-- Only one correct answer
-- Explanation must be grounded in the evidence pack
-- No trick questions
-- Avoid asking the same concept twice unless necessary
+- Generate exactly {question_count} questions.
+- Prefer multiple choice questions (MCQs) with 4 unique options (A, B, C, D).
+- Only one correct answer per question.
+- The "answer" field must map directly to the correct option identifier (e.g., "A", "B", "C", or "D").
+- Explanations must be detailed and grounded entirely in the provided evidence pack.
+- No trick questions.
+- Avoid asking about the same concept twice unless necessary for different difficulty levels.
 
 Evidence pack:
 {evidence_pack_json}
 """.strip()
 
+
     @staticmethod
     def _build_flashcards_prompt(
         evidence_pack_json: str,
-        topic: str | None,
         prompt: str | None,
         options: Dict[str, Any],
     ) -> str:
@@ -229,29 +192,15 @@ Goal:
 - Prefer important terms, concepts, definitions, distinctions, procedures, and facts.
 - Keep each card focused on one concept.
 
-User topic: {topic or "N/A"}
 User request: {prompt or "N/A"}
 Requested card count: {card_count}
 
-Return STRICT JSON only in this shape:
-{{
-  "title": "Flashcards title",
-  "description": "Short description or null",
-  "cards": [
-    {{
-      "front": "Question / term / prompt",
-      "back": "Answer / definition / explanation",
-      "hint": "optional hint or null"
-    }}
-  ]
-}}
-
 Rules:
-- Generate exactly {card_count} cards
-- Avoid vague fronts like "Explain this"
-- Back should be concise but useful
-- Prefer one concept per card
-- Avoid duplicate cards
+- Generate exactly {card_count} cards.
+- Avoid vague fronts like "Explain this"; the front should be a clear question, term, or prompt.
+- The back should be concise but provide a useful answer, definition, or explanation.
+- Prefer one concept per card.
+- Avoid duplicate cards.
 
 Evidence pack:
 {evidence_pack_json}
@@ -260,7 +209,6 @@ Evidence pack:
     @staticmethod
     def _build_faq_prompt(
         evidence_pack_json: str,
-        topic: str | None,
         prompt: str | None,
         options: Dict[str, Any],
     ) -> str:
@@ -275,27 +223,14 @@ Goal:
 - Use ONLY the evidence pack.
 - Prefer questions a learner or reader would naturally ask.
 
-User topic: {topic or "N/A"}
 User request: {prompt or "N/A"}
 Requested FAQ count: {faq_count}
 
-Return STRICT JSON only in this shape:
-{{
-  "title": "FAQ title",
-  "description": "Short description or null",
-  "items": [
-    {{
-      "question": "FAQ question",
-      "answer": "Grounded answer"
-    }}
-  ]
-}}
-
 Rules:
-- Generate exactly {faq_count} FAQ items
-- Questions should be natural and useful
-- Answers should be concise but complete
-- Avoid near-duplicate questions
+- Generate exactly {faq_count} FAQ items.
+- Questions should be natural, useful, and reflect common points of confusion or interest.
+- Answers must be concise but complete, and grounded entirely in the evidence pack.
+- Avoid near-duplicate questions.
 
 Evidence pack:
 {evidence_pack_json}
@@ -304,7 +239,6 @@ Evidence pack:
     @staticmethod
     def _build_study_guide_prompt(
         evidence_pack_json: str,
-        topic: str | None,
         prompt: str | None,
         options: Dict[str, Any],
     ) -> str:
@@ -313,45 +247,30 @@ Evidence pack:
         
         # Adjust section count based on size
         section_guidance = {
-            "short": "Generate 3-4 sections",
-            "medium": "Generate 5-7 sections",
-            "large": "Generate 8-10 sections",
-        }.get(size, "Generate 5-7 sections")
+            "short": "Generate 3-4 distinct sections",
+            "medium": "Generate 5-7 distinct sections",
+            "large": "Generate 8-10 distinct sections",
+        }.get(size, "Generate 5-7 distinct sections")
 
         return f"""
 You are generating a grounded study guide from an evidence pack.
 
 Goal:
-- Build a clean study guide that helps a learner revise the material.
+- Build a clean study guide that helps a learner revise the material comprehensively.
 - Use ONLY the evidence pack.
-- Organize content into meaningful sections.
+- Organize content into meaningful, concept-based sections.
 
-User topic: {topic or "N/A"}
 User request: {prompt or "N/A"}
 Study guide size: {size}
-{section_guidance}
-
-Return STRICT JSON only in this shape:
-{{
-  "title": "Study guide title",
-  "overview": "Short overview paragraph",
-  "sections": [
-    {{
-      "heading": "Section title",
-      "explanation": "Section explanation",
-      "key_points": ["key point 1", "key point 2"],
-      "important_terms": ["term 1", "term 2"]
-    }}
-  ],
-  "review_questions": ["question 1", "question 2"]
-}}
 
 Rules:
-- Organize by concepts, not random fragments
-- Keep explanations grounded
-- Include review questions at the end
-- Avoid filler
-- {section_guidance}
+- {section_guidance}.
+- Organize the guide by core concepts, not just random textual fragments.
+- Provide a brief, high-level overview of the entire study guide content.
+- For each section, provide a clear heading, a detailed explanation, a list of key points, and a list of important terms/definitions.
+- At the end of the guide, generate a list of review questions to test the learner's understanding of the material.
+- Keep all explanations strictly grounded in the provided text.
+- Avoid filler words and conversational noise.
 
 Evidence pack:
 {evidence_pack_json}
@@ -360,7 +279,6 @@ Evidence pack:
     @staticmethod
     def _build_summary_prompt(
         evidence_pack_json: str,
-        topic: str | None,
         prompt: str | None,
         options: Dict[str, Any],
     ) -> str:
@@ -369,40 +287,28 @@ Evidence pack:
 You are generating a grounded summary from an evidence pack.
 
 Goal:
-- Create a useful structured summary.
+- Create a highly structured, useful summary of the provided text.
 - Use ONLY the evidence pack.
 - Focus on main ideas, key facts, and major takeaways.
 
-User topic: {topic or "N/A"}
 User request: {prompt or "N/A"}
 
-Return STRICT JSON only in this shape:
-{{
-  "title": "Summary title",
-  "overview": "Short overview paragraph",
-  "key_points": ["key takeaway 1", "key takeaway 2"],
-  "sections": [
-    {{
-      "heading": "Section heading",
-      "bullets": ["point 1", "point 2"]
-    }}
-  ]
-}}
-
 Rules:
-- Avoid filler
-- Keep the summary grounded and specific
-- Prefer clarity over verbosity
-- Organize sections logically
+- Provide a concise overview paragraph that captures the core essence of the text.
+- Extract the absolute most important "key points" as top-level takeaways.
+- Break the rest of the summary down into logical sections.
+- Each section must have a descriptive heading and summarize its content using clear bullet points.
+- Keep the summary strictly grounded, specific, and factual.
+- Prefer clarity and density of information over verbosity; avoid filler.
 
 Evidence pack:
 {evidence_pack_json}
 """.strip()
 
+
     @staticmethod
     def _build_mindmap_prompt(
         evidence_pack_json: str,
-        topic: str | None,
         prompt: str | None,
         options: Dict[str, Any],
     ) -> str:
@@ -413,32 +319,18 @@ You are generating a grounded mind map structure from an evidence pack.
 Goal:
 - Build a hierarchical concept tree.
 - Use ONLY the evidence pack.
-- Organize concepts into a clean parent-child structure.
+- Organize concepts into a clean, logical parent-child structure.
 
-User topic: {topic or "N/A"}
 User request: {prompt or "N/A"}
 
-Return STRICT JSON only in this shape:
-{{
-  "title": "Mind map title",
-  "root": {{
-    "label": "Root topic",
-    "children": [
-      {{
-        "label": "Child topic",
-        "children": [
-          {{"label": "Subtopic", "children": []}}
-        ]
-      }}
-    ]
-  }}
-}}
-
 Rules:
-- Keep the structure concept-oriented
-- Avoid too many shallow duplicate nodes
-- Prefer 2-4 levels max
-- Root should be the main topic or concept
+- The mind map must have exactly one central "root" node representing the primary topic.
+- Branch out from the root node using nested child nodes.
+- Keep all node labels concise and punchy (prefer 1-5 words).
+- Limit the depth to 2 to 4 levels maximum (e.g., Root -> Child -> Subtopic -> Detail).
+- Group related concepts logically under their appropriate parent nodes.
+- Avoid creating too many shallow, redundant nodes that don't add structural value.
+- Stay strictly grounded in the provided text.
 
 Evidence pack:
 {evidence_pack_json}
@@ -447,7 +339,6 @@ Evidence pack:
     @staticmethod
     def _build_slide_deck_prompt(
         evidence_pack_json: str,
-        topic: str | None,
         prompt: str | None,
         options: Dict[str, Any],
     ) -> str:
@@ -462,7 +353,6 @@ Goal:
 - Use ONLY the evidence pack.
 - Each slide should have a clear purpose.
 
-User topic: {topic or "N/A"}
 User request: {prompt or "N/A"}
 Requested slide count: {slide_count}
 
@@ -525,7 +415,6 @@ Evidence pack:
     def build_simple_prompt(
         artifact_type: str,
         context: str,
-        topic: str | None = None,
         prompt: str | None = None,
     ) -> str:
         """
@@ -536,15 +425,7 @@ Evidence pack:
         artifact_description = ArtifactPromptBuilder.get_artifact_type_description(artifact_type)
         instructions = ArtifactPromptBuilder.get_artifact_type_instructions(artifact_type)
 
-        user_focus = []
-        if topic:
-            user_focus.append(f"Topic: {topic}")
-        if prompt:
-            user_focus.append(f"User request: {prompt}")
-
-        focus_text = "\n".join(user_focus).strip()
-        if not focus_text:
-            focus_text = "No specific focus provided."
+        focus_text = f"User request: {prompt.strip()}" if prompt and prompt.strip() else "No specific focus provided."
 
         return f"""
 You are generating a {artifact_description} from the source material below.

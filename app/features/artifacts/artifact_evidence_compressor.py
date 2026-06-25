@@ -1,4 +1,3 @@
-# artifact_evidence_compressor.py
 """Evidence compressor for reducing context size while preserving key information."""
 
 from __future__ import annotations
@@ -10,8 +9,10 @@ from typing import Any, Dict, Optional
 from pydantic import ValidationError
 
 from app.core.logger import logger
-from app.features.artifacts.artifact_models import EvidencePack
 from app.features.artifacts.artifact_prompt_builder import ArtifactPromptBuilder
+
+# ── Unified Schema Imports ───────────────────────────────────────────────────
+from app.features.artifacts.schema import EvidencePack, EvidenceItem
 
 
 class ArtifactEvidenceCompressor:
@@ -47,7 +48,6 @@ class ArtifactEvidenceCompressor:
         self,
         artifact_type: str,
         context_text: str,
-        topic: str | None = None,
         prompt: str | None = None,
     ) -> EvidencePack:
         """
@@ -56,7 +56,6 @@ class ArtifactEvidenceCompressor:
         Args:
             artifact_type: Type of artifact being generated
             context_text: The retrieved context text
-            topic: Optional user-provided topic
             prompt: Optional user-provided prompt/instructions
             
         Returns:
@@ -67,14 +66,13 @@ class ArtifactEvidenceCompressor:
         """
         if not context_text or context_text == "No documents available.":
             logger.warning("Empty context provided to compressor, returning empty evidence pack")
-            return self._fallback_evidence_pack(context_text="No content available.", topic=topic)
+            return self._fallback_evidence_pack(context_text="No content available.")
 
         try:
             # Build the compression prompt
             compression_prompt = ArtifactPromptBuilder.build_evidence_compression_prompt(
                 artifact_type=artifact_type,
                 context_text=context_text,
-                topic=topic,
                 prompt=prompt,
             )
 
@@ -87,7 +85,7 @@ class ArtifactEvidenceCompressor:
             parsed = self._parse_json_response(raw)
             if parsed is None:
                 logger.warning("Evidence compression JSON parse failed, using fallback evidence pack")
-                return self._fallback_evidence_pack(context_text=context_text, topic=topic)
+                return self._fallback_evidence_pack(context_text=context_text)
 
             # Validate with Pydantic
             try:
@@ -104,11 +102,11 @@ class ArtifactEvidenceCompressor:
                 return evidence_pack
             except ValidationError as e:
                 logger.warning(f"EvidencePack validation failed: {e}")
-                return self._fallback_evidence_pack(context_text=context_text, topic=topic)
+                return self._fallback_evidence_pack(context_text=context_text)
 
         except Exception as e:
             logger.error(f"Evidence compression error: {e}", exc_info=True)
-            return self._fallback_evidence_pack(context_text=context_text, topic=topic)
+            return self._fallback_evidence_pack(context_text=context_text)
 
     async def _generate_compression(self, prompt: str) -> str:
         """
@@ -156,7 +154,6 @@ class ArtifactEvidenceCompressor:
     def _fallback_evidence_pack(
         self, 
         context_text: str, 
-        topic: str | None = None
     ) -> EvidencePack:
         """
         If the model returns bad JSON or fails, produce a cheap fallback pack 
@@ -165,7 +162,6 @@ class ArtifactEvidenceCompressor:
         if not context_text or context_text == "No documents available.":
             return EvidencePack(
                 title="Evidence Pack",
-                topic=topic,
                 facts=[],
                 concepts=[],
                 formulas=[],
@@ -197,11 +193,11 @@ class ArtifactEvidenceCompressor:
                 continue
             seen_facts.add(key)
 
-            facts.append({
-                "fact": line[:500],  # Truncate to reasonable length
-                "source_label": None,
-                "importance": "medium",
-            })
+            facts.append(EvidenceItem(
+                fact=line[:500],  # Truncate to reasonable length
+                source_label=None,
+                importance="medium",
+            ))
 
             if len(facts) >= 12:
                 break
@@ -210,16 +206,15 @@ class ArtifactEvidenceCompressor:
         if not facts:
             for line in lines:
                 if len(line) > 20 and not line.startswith("#") and not line.startswith("["):
-                    facts.append({
-                        "fact": line[:500],
-                        "source_label": None,
-                        "importance": "medium",
-                    })
+                    facts.append(EvidenceItem(
+                        fact=line[:500],
+                        source_label=None,
+                        importance="medium",
+                    ))
                     break
 
         return EvidencePack(
             title="Evidence Pack",
-            topic=topic,
             facts=facts,
             concepts=[],
             formulas=[],
@@ -398,8 +393,6 @@ class ArtifactEvidenceCompressor:
         """
         lines = []
         lines.append(f"# {evidence_pack.title}")
-        if evidence_pack.topic:
-            lines.append(f"Topic: {evidence_pack.topic}")
         lines.append("")
 
         if evidence_pack.concepts:

@@ -1,6 +1,6 @@
 # artifact_context_builder.py
 """
-Artifact Context Builder V4
+Artifact Context Builder
 ============================
 
 Optimized for:
@@ -36,7 +36,7 @@ Goals:
 - Work even without rich metadata like section_title / contains_definition
 
 Core strategy:
-1. Focused semantic retrieval if topic/prompt exists
+1. Focused semantic retrieval if prompt exists
 2. Broad coverage retrieval across sources
 3. Merge with artifact-aware heuristics
 4. Enforce very tight token budget
@@ -51,7 +51,7 @@ import math
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
 from qdrant_client.models import Filter, FieldCondition, MatchAny, MatchValue
 
@@ -59,42 +59,14 @@ from app.core.ai_clients import get_embeddings, get_qdrant_client
 from app.core.config import settings
 from app.core.logger import logger
 
-
-# =============================================================================
-# Types
-# =============================================================================
-
-ArtifactType = Literal[
-    "quiz",
-    "flashcards",
-    "faq",
-    "study_guide",
-    "summary",
-    "mindmap",
-    "slide_deck",
-    "artifact",
-]
-
-
-# =============================================================================
-# Public result models
-# =============================================================================
-
-@dataclass
-class SourceRef:
-    """Metadata about a retrieved chunk for optional citation tracking."""
-    source_id: str
-    file_name: str
-    page_number: int | str | None
-    chunk_index: int
-    similarity_score: float
-
+# ── Unified Schema Imports ───────────────────────────────────────────────────
+from app.features.artifacts.schema import ArtifactType, ArtifactSourceRef
 
 @dataclass
 class ContextResult:
     """Output of the context builder."""
     context_text: str
-    source_refs: List[SourceRef] = field(default_factory=list)
+    source_refs: List[ArtifactSourceRef] = field(default_factory=list)
     mode_used: str = "compact_hybrid"
     total_chunks: int = 0
     total_estimated_tokens: int = 0
@@ -126,9 +98,9 @@ class RetrievedChunk:
         """Unique identifier for deduplication."""
         return f"{self.source_id}:{self.chunk_index}"
 
-    def to_source_ref(self) -> SourceRef:
+    def to_source_ref(self) -> ArtifactSourceRef:
         """Convert to public SourceRef."""
-        return SourceRef(
+        return ArtifactSourceRef(
             source_id=self.source_id,
             file_name=self.file_name,
             page_number=self.page_number,
@@ -136,10 +108,6 @@ class RetrievedChunk:
             similarity_score=round(self.similarity_score, 4),
         )
 
-
-# =============================================================================
-# Artifact retrieval config
-# =============================================================================
 
 @dataclass(frozen=True)
 class ArtifactRetrievalConfig:
@@ -291,11 +259,6 @@ ARTIFACT_CONFIGS: Dict[str, ArtifactRetrievalConfig] = {
     ),
 }
 
-
-# =============================================================================
-# Retrieval hints
-# =============================================================================
-
 ARTIFACT_HINTS: Dict[str, str] = {
     "quiz": (
         "Retrieve concepts, definitions, important facts, examples, comparisons, "
@@ -330,11 +293,6 @@ ARTIFACT_HINTS: Dict[str, str] = {
     ),
 }
 
-
-# =============================================================================
-# Main builder
-# =============================================================================
-
 class ArtifactContextBuilder:
     """
     Compact artifact context builder optimized for Groq free-tier usage.
@@ -352,7 +310,6 @@ class ArtifactContextBuilder:
         user_id: uuid.UUID,
         resolved_source_ids: List[str],
         artifact_type: ArtifactType = "artifact",
-        topic: str | None = None,
         prompt: str | None = None,
         max_context_tokens: int | None = None,
         max_context_chars: int | None = None,
@@ -381,14 +338,13 @@ class ArtifactContextBuilder:
         if max_context_chars is None:
             max_context_chars = cfg.max_context_chars
 
-        has_focus = bool((topic or "").strip() or (prompt or "").strip())
+        has_focus = bool((prompt or "").strip())
 
         try:
             semantic_chunks = ArtifactContextBuilder._semantic_retrieval(
                 user_id=user_id,
                 source_ids=resolved_source_ids,
                 artifact_type=artifact_type,
-                topic=topic,
                 prompt=prompt,
                 semantic_k=cfg.semantic_k,
             )
@@ -412,7 +368,6 @@ class ArtifactContextBuilder:
             context_text = ArtifactContextBuilder._assemble_context(
                 chunks=selected,
                 artifact_type=artifact_type,
-                topic=topic,
                 prompt=prompt,
                 max_context_chars=max_context_chars,
             )
@@ -447,7 +402,6 @@ class ArtifactContextBuilder:
         user_id: uuid.UUID,
         source_ids: List[str],
         artifact_type: str,
-        topic: str | None,
         prompt: str | None,
         semantic_k: int,
     ) -> List[RetrievedChunk]:
@@ -455,12 +409,12 @@ class ArtifactContextBuilder:
         Global semantic retrieval across all selected sources.
 
         Build Semantic Query
-        ├── If topic/prompt exists:
-        │   └── "Topic: {topic}\nUser request: {prompt}\nArtifact type: {artifact_type}\n{hint}"
-        ├── If no topic/prompt:
+        ├── If prompt exists:
+        │   └── "User request: {prompt}\nArtifact type: {artifact_type}\n{hint}"
+        ├── If no prompt:
         │   └── "Artifact type: {artifact_type}\n{hint}"
         └── Example for "quiz":
-            └── "Topic: Machine Learning\nUser request: Create quiz on ML basics\nArtifact type: quiz\nRetrieve concepts, definitions, important facts..."
+            └── "User request: Create quiz on ML basics\nArtifact type: quiz\nRetrieve concepts, definitions, important facts..."
 
         Embed & Search Qdrant
         ├── query_vector = embeddings.embed_query(semantic_query)
@@ -476,7 +430,6 @@ class ArtifactContextBuilder:
         """
         query = ArtifactContextBuilder._build_semantic_query(
             artifact_type=artifact_type,
-            topic=topic,
             prompt=prompt,
         )
 
@@ -566,24 +519,12 @@ class ArtifactContextBuilder:
     # ── Query builders ─────────────────────────────────────────────────────────
 
     @staticmethod
-    def _build_semantic_query(
-        artifact_type: str,
-        topic: str | None,
-        prompt: str | None,
-    ) -> str:
+    def _build_semantic_query(artifact_type: str, prompt: str | None) -> str:
         """Build the semantic search query from available inputs."""
         hint = ARTIFACT_HINTS.get(artifact_type, ARTIFACT_HINTS["artifact"])
 
-        parts: List[str] = []
-        if topic and topic.strip():
-            parts.append(f"Topic: {topic.strip()}")
         if prompt and prompt.strip():
-            parts.append(f"User request: {prompt.strip()}")
-
-        if parts:
-            parts.append(f"Artifact type: {artifact_type}")
-            parts.append(hint)
-            return "\n".join(parts)
+            return f"User request: {prompt.strip()}\nArtifact type: {artifact_type}\n{hint}"
 
         return f"Artifact type: {artifact_type}\n{hint}"
 
@@ -591,12 +532,7 @@ class ArtifactContextBuilder:
     def _build_coverage_query(artifact_type: str) -> str:
         """Build the coverage search query."""
         hint = ARTIFACT_HINTS.get(artifact_type, ARTIFACT_HINTS["artifact"])
-        return (
-            f"Important information from this source for {artifact_type} generation. "
-            f"{hint}"
-        )
-
-    # ── Hit processing ─────────────────────────────────────────────────────────
+        return f"Important information from this source for {artifact_type} generation. {hint}"
 
     @staticmethod
     def _process_hits(points: list, retrieval_bucket: str) -> List[RetrievedChunk]:
@@ -609,34 +545,22 @@ class ArtifactContextBuilder:
             if not chunk_text:
                 continue
 
-            source_id = str(payload.get("source_id", ""))
-            source_type = str(payload.get("source_type", "document")).upper()
-            title = payload.get("title") or payload.get("file_name") or "Unknown Source"
-            file_name = payload.get("file_name") or title
-            page_number = payload.get("page_number")
-            chunk_index = int(payload.get("chunk_index", 0))
-            is_table = bool(payload.get("is_table", False))
-            similarity_score = float(getattr(hit, "score", 0.0) or 0.0)
-
             chunks.append(
                 RetrievedChunk(
-                    source_id=source_id,
-                    source_type=source_type,
-                    title=title,
-                    file_name=file_name,
-                    page_number=page_number,
-                    chunk_index=chunk_index,
+                    source_id=str(payload.get("source_id", "")),
+                    source_type=str(payload.get("source_type", "document")).upper(),
+                    title=payload.get("title") or payload.get("file_name") or "Unknown Source",
+                    file_name=payload.get("file_name") or payload.get("title") or "Unknown Source",
+                    page_number=payload.get("page_number"),
+                    chunk_index=int(payload.get("chunk_index", 0)),
                     chunk_text=chunk_text,
-                    similarity_score=similarity_score,
-                    is_table=is_table,
+                    similarity_score=float(getattr(hit, "score", 0.0) or 0.0),
+                    is_table=bool(payload.get("is_table", False)),
                     retrieval_bucket=retrieval_bucket,
                     estimated_tokens=ArtifactContextBuilder._estimate_tokens(chunk_text),
                 )
             )
-
         return chunks
-
-    # ── Compact coverage selection inside one source ─────────────────────────
 
     @staticmethod
     def _select_compact_source_coverage(
@@ -955,7 +879,6 @@ class ArtifactContextBuilder:
     def _assemble_context(
         chunks: List[RetrievedChunk],
         artifact_type: str,
-        topic: str | None,
         prompt: str | None,
         max_context_chars: int,
     ) -> str:
@@ -971,8 +894,6 @@ class ArtifactContextBuilder:
         parts: List[str] = []
         parts.append(f"# Artifact Type: {artifact_type}")
 
-        if topic and topic.strip():
-            parts.append(f"# Topic: {topic.strip()}")
 
         if prompt and prompt.strip():
             parts.append(f"# User Prompt: {prompt.strip()}")
