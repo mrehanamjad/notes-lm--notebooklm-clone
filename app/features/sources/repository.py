@@ -36,6 +36,17 @@ class SourceRepository:
             ).limit(1)
         )
         return result.scalar_one_or_none()
+    
+    async def get_source_by_source_id_notebook_id(self, source_id: str, user_id: uuid.UUID, notebook_id: uuid.UUID) -> Optional[Source]:
+        """Scope Validation: Checks if file exists in the specific notebook or globally for the user."""
+        result = await self.db.execute(
+            select(Source).where(
+                Source.source_id == source_id,
+                Source.user_id == user_id,
+                Source.notebook_id == notebook_id
+            )
+        )
+        return result.scalar_one_or_none()
 
     async def get_in_notebook_bulk(self, source_ids: list[str], user_id: uuid.UUID, notebook_id: uuid.UUID) -> list[Source]:
         """Scope Validation Bulk: Checks if multiple files exist in the specific notebook."""

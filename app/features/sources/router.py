@@ -117,11 +117,12 @@ async def list_sources(
 @router.get("/{source_id}", response_model=APIResponse[SourceResponse])
 async def get_source(
     source_id: str,
+    notebook_id: uuid.UUID = Query(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     service = SourceService(db)
-    source = await service.get_source(source_id, current_user.id)
+    source = await service.get_source(source_id, current_user.id, notebook_id)
     return APIResponse(
         message="Source fetched successfully",
         data=source
@@ -131,11 +132,12 @@ async def get_source(
 @router.get("/{source_id}/status", response_model=APIResponse[SourceStatusResponse])
 async def get_source_status(
     source_id: str,
+    notebook_id: uuid.UUID = Query(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     service = SourceService(db)
-    status_data = await service.get_status(source_id, current_user.id)
+    status_data = await service.get_status(source_id, current_user.id, notebook_id)
     return APIResponse(
         message="Status fetched successfully",
         data=status_data

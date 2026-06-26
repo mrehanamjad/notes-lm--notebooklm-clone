@@ -431,6 +431,8 @@ class SourceService:
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
         temp_path = temp_file.name
 
+        total_size = 0
+
         try:
             async with aiofiles.open(temp_path, 'wb') as out_file:
                 while chunk := await file.read(1024 * 1024):
@@ -683,14 +685,16 @@ class SourceService:
             has_more=(skip + size) < total,
         )
 
-    async def get_source(self, source_id: str, user_id: uuid.UUID) -> Source:
-        source = await self.source_repo.get_first_by_source_id(source_id, user_id)
+    async def get_source(self, source_id: str, user_id: uuid.UUID,notebook_id: uuid.UUID) -> Source:
+        source = await self.source_repo.get_source_by_source_id_notebook_id(source_id, user_id,notebook_id)
         if not source:
-            raise NotFoundException(f"Source {source_id} not found")
+            raise NotFoundException(f"Source not found or access denied")
         return source
 
-    async def get_status(self, source_id: str, user_id: uuid.UUID) -> SourceStatusResponse:
-        source = await self.get_source(source_id, user_id)
+    async def get_status(self, source_id: str, user_id: uuid.UUID,notebook_id: uuid.UUID) -> SourceStatusResponse:
+        source = await self.get_source(source_id, user_id,notebook_id)
+        if not source:
+            raise NotFoundException(f"Source not found or access denied")
         return SourceStatusResponse(
             source_id=source_id,
             status=source.status,

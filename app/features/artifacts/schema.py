@@ -120,7 +120,7 @@ class QuizOption(BaseModel):
 class QuizQuestion(BaseModel):
     question: str = Field(..., description="The quiz question text")
     type: str = Field("mcq", description="Question type: mcq or true_false")
-    options: List[QuizOption] = Field(..., description="List of answer options")
+    options: List[QuizOption] = Field(..., description="List of answer options as objects")
     answer: str = Field(..., description="The correct answer (A, B, C, D, or True/False)")
     explanation: str = Field(..., description="Brief explanation of why the answer is correct")
 
@@ -408,3 +408,9 @@ def get_artifact_default_options(artifact_type: str | ArtifactType) -> Dict[str,
         artifact_type = artifact_type.value
     info = ARTIFACT_TYPE_INFO.get(artifact_type)
     return info["default_options"] if info else {}
+
+
+# Aliases for generator compatibility
+QuizOutput = QuizArtifact
+FlashcardOutput = FlashcardsArtifact
+FAQOutput = FAQArtifact

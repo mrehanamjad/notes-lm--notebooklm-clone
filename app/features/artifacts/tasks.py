@@ -25,12 +25,70 @@ from app.features.artifacts.schema import (
 )
 
 
+# async def generate_structured_content(
+#     llm: Any,
+#     artifact_type: ArtifactType,
+#     prompt: str,
+# ) -> dict[str, Any]:
+#     """Generate structured content using LLM with schema."""
+#     schema_map = {
+#         ArtifactType.QUIZ: QuizArtifact,
+#         ArtifactType.FLASHCARDS: FlashcardsArtifact,
+#         ArtifactType.FAQ: FAQArtifact,
+#         ArtifactType.STUDY_GUIDE: StudyGuideArtifact,
+#         ArtifactType.SUMMARY: SummaryArtifact,
+#         ArtifactType.MINDMAP: MindMapArtifact,
+#         ArtifactType.SLIDE_DECK: SlideDeckArtifact,
+#     }
+
+#     schema = schema_map.get(artifact_type, SummaryArtifact)
+
+#     try:
+#         # Using with_structured_output if available
+#         if hasattr(llm, "with_structured_output"):
+#             structured_llm = llm.with_structured_output(schema)
+#             result = await structured_llm.ainvoke(prompt)
+#             return result.model_dump() if hasattr(result, "model_dump") else result
+#         else:
+#             # Fallback: text generation + JSON parsing
+#             raw = await llm.ainvoke(prompt)
+            
+#             try:
+#                 # 1. Try finding markdown JSON block
+#                 json_match = re.search(r"```json\s*(.*?)\s*```", raw.content, re.DOTALL)
+#                 if json_match:
+#                     return json.loads(json_match.group(1))
+                
+#                 # 2. Try parsing the raw content directly (if LLM forgot backticks)
+#                 return json.loads(raw.content)
+                
+#             except json.JSONDecodeError:
+#                 logger.error(f"Failed to parse JSON from fallback generation for {artifact_type.value}.")
+#                 return {"raw": raw.content}
+                
+#     except Exception as e:
+#         logger.error(f"Structured generation failed for {artifact_type.value}: {e}")
+#         raise e
+
+async def _repair_and_parse_json(text: str) -> dict[str, Any]:
+    """Attempts to repair incomplete JSON strings by adding missing braces."""
+    text = text.strip()
+    
+    # Simple count of opening vs closing brackets
+    open_brackets = text.count('{') + text.count('[')
+    close_brackets = text.count('}') + text.count(']')
+    
+    if open_brackets > close_brackets:
+        text += '}' * (open_brackets - close_brackets)
+        
+    return json.loads(text)
+
 async def generate_structured_content(
     llm: Any,
     artifact_type: ArtifactType,
     prompt: str,
 ) -> dict[str, Any]:
-    """Generate structured content using LLM with schema."""
+    """Generate structured content with robust repair for truncated JSON."""
     schema_map = {
         ArtifactType.QUIZ: QuizArtifact,
         ArtifactType.FLASHCARDS: FlashcardsArtifact,
@@ -43,33 +101,28 @@ async def generate_structured_content(
 
     schema = schema_map.get(artifact_type, SummaryArtifact)
 
-    try:
-        # Using with_structured_output if available
-        if hasattr(llm, "with_structured_output"):
+    # 1. Primary Attempt: Structured Output
+    if hasattr(llm, "with_structured_output"):
+        try:
             structured_llm = llm.with_structured_output(schema)
             result = await structured_llm.ainvoke(prompt)
             return result.model_dump() if hasattr(result, "model_dump") else result
-        else:
-            # Fallback: text generation + JSON parsing
-            raw = await llm.ainvoke(prompt)
-            
-            try:
-                # 1. Try finding markdown JSON block
-                json_match = re.search(r"```json\s*(.*?)\s*```", raw.content, re.DOTALL)
-                if json_match:
-                    return json.loads(json_match.group(1))
-                
-                # 2. Try parsing the raw content directly (if LLM forgot backticks)
-                return json.loads(raw.content)
-                
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse JSON from fallback generation for {artifact_type.value}.")
-                return {"raw": raw.content}
-                
-    except Exception as e:
-        logger.error(f"Structured generation failed for {artifact_type.value}: {e}")
-        raise e
+        except Exception as e:
+            logger.warning(f"Structured output failed, falling back to raw: {e}")
 
+    # 2. Fallback: Text Generation + Repair
+    raw = await llm.ainvoke(prompt)
+    content = raw.content if hasattr(raw, "content") else str(raw)
+    
+    # Extract the JSON block
+    json_match = re.search(r'(\{.*\}|\[.*\])', content, re.DOTALL)
+    if json_match:
+        try:
+            return await _repair_and_parse_json(json_match.group(1))
+        except json.JSONDecodeError:
+            logger.error("JSON repair failed.")
+    
+    return {"raw": content}
 
 async def run_generation_task(
     artifact_id: uuid.UUID,
