@@ -1,0 +1,10 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.git/
+.env
+backend.log
+test_*.py
+alembic/
+alembic.ini
