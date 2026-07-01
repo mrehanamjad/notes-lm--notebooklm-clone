@@ -1,4 +1,3 @@
-
 import uuid
 import json
 import os
@@ -36,6 +35,8 @@ from app.features.artifacts.schema import (
     AudioOverviewArtifact,
     AudioOverviewStoredContent,
     AudioOverviewMetadata,
+    ReportArtifact,
+    DataTableArtifact,
 )
 from app.features.artifacts.utils import IconifyService, PexelsService
 
@@ -113,6 +114,8 @@ async def generate_structured_content(
         ArtifactType.MINDMAP: MindMapArtifact,
         ArtifactType.SLIDE_DECK: SlideDeckArtifact,
         ArtifactType.VOICE_OVERVIEW: AudioOverviewArtifact,
+        ArtifactType.REPORT: ReportArtifact,
+        ArtifactType.DATATABLE: DataTableArtifact,
     }
 
     schema = schema_map.get(artifact_type, SummaryArtifact)
@@ -207,28 +210,65 @@ async def run_generation_task(
     async with AsyncSessionLocal() as db:
         repo = ArtifactRepository(db)
         try:
-            # 1. Build Context
-            # Note: If build_context makes DB/Vector DB calls, ensure it doesn't need to be awaited.
-            context_result = ArtifactContextBuilder.build_context(
-                user_id=user_id,
-                resolved_source_ids=resolved_ids,
-                artifact_type=artifact_type.value,
-                prompt=request_prompt,
-            )
+            # 0. Fetch the artifact up front — needed either way, and lets us
+            # check for a previously-cached evidence pack (e.g. from a prior
+            # failed attempt) before doing any retrieval/compression work.
+            artifact = await repo.get_by_id(artifact_id, notebook_id, user_id)
+            if not artifact:
+                logger.error(f"Artifact {artifact_id} not found when starting generation task")
+                return
 
-            # 2. Compress Evidence
-            llm = get_llm()
-            compressor = ArtifactEvidenceCompressor(llm)
-            try:
-                evidence_pack = await compressor.compress(
+            cached_pack = artifact.evidence_pack_json
+            context_metadata: dict[str, Any] = dict(artifact.context_metadata or {})
+
+            if cached_pack:
+                # Resuming after a prior failure that happened *after* compression
+                # succeeded. Skip vector search + LLM compression entirely.
+                logger.info(
+                    f"Resuming artifact {artifact_id} from cached evidence pack "
+                    f"(skipping context build + compression)"
+                )
+                evidence_pack_json = json.dumps(cached_pack, indent=2)
+                llm = get_llm()
+            else:
+                # 1. Build Context
+                # Note: If build_context makes DB/Vector DB calls, ensure it doesn't need to be awaited.
+                context_result = ArtifactContextBuilder.build_context(
+                    user_id=user_id,
+                    resolved_source_ids=resolved_ids,
                     artifact_type=artifact_type.value,
-                    context_text=context_result.context_text,
                     prompt=request_prompt,
                 )
-                evidence_pack_json = json.dumps(evidence_pack.model_dump(), indent=2)
-            except Exception as e:
-                logger.warning(f"Evidence compression failed: {e}")
-                evidence_pack_json = context_result.context_text
+
+                # 2. Compress Evidence
+                llm = get_llm()
+                compressor = ArtifactEvidenceCompressor(llm)
+                try:
+                    evidence_pack = await compressor.compress(
+                        artifact_type=artifact_type.value,
+                        context_text=context_result.context_text,
+                        prompt=request_prompt,
+                    )
+                    evidence_pack_dict = evidence_pack.model_dump()
+                    evidence_pack_json = json.dumps(evidence_pack_dict, indent=2)
+                except Exception as e:
+                    logger.warning(f"Evidence compression failed: {e}")
+                    evidence_pack_dict = None
+                    evidence_pack_json = context_result.context_text
+
+                context_metadata = {
+                    "mode_used": context_result.mode_used,
+                    "total_chunks": context_result.total_chunks,
+                    "total_estimated_tokens": context_result.total_estimated_tokens,
+                }
+
+                # Persist the evidence pack (and context metadata) right away, before
+                # attempting generation. If generation fails below, a retry can jump
+                # straight back in here without re-running retrieval or compression.
+                if evidence_pack_dict:
+                    artifact.evidence_pack_json = evidence_pack_dict
+                artifact.context_metadata = context_metadata
+                artifact = await repo.update(artifact)
 
             # 3. Build Prompt & Generate Content
             generation_prompt = ArtifactPromptBuilder.build_generation_prompt(
@@ -255,22 +295,19 @@ async def run_generation_task(
             
             title = content.get("title", f"{artifact_type.value.title()} Artifact")
 
-            # 4. Save Success Status (READY)
+            # 4. Save Success Status (READY).
+            # update_content also clears evidence_pack_json now that it's no longer needed.
             artifact = await repo.get_by_id(artifact_id, notebook_id, user_id)
             if artifact:
                 artifact.title = title
-                artifact.content_json = content
-                artifact.status = ArtifactStatus.READY
-                artifact.context_metadata = {
-                    "mode_used": context_result.mode_used,
-                    "total_chunks": context_result.total_chunks,
-                    "total_estimated_tokens": context_result.total_estimated_tokens,
-                }
-                await repo.update(artifact)
+                artifact.context_metadata = context_metadata
+                await repo.update_content(artifact, content=content, status=ArtifactStatus.READY)
                 logger.info(f"Background task complete for artifact {artifact_id}")
 
         except Exception as e:
-            # 5. Save Failure Status (ERROR)
+            # 5. Save Failure Status (ERROR).
+            # Note: this does NOT touch evidence_pack_json, so if compression had
+            # already succeeded and been persisted above, it survives for a retry.
             logger.error(f"Background generation failed for {artifact_id}: {e}", exc_info=True)
             artifact = await repo.get_by_id(artifact_id, notebook_id, user_id)
             if artifact:
@@ -312,27 +349,61 @@ async def run_voice_overview_generation_task(
     async with AsyncSessionLocal() as db:
         repo = ArtifactRepository(db)
         try:
-            # 1. Build Context (reuses the same artifact-aware retrieval pipeline)
-            context_result = ArtifactContextBuilder.build_context(
-                user_id=user_id,
-                resolved_source_ids=resolved_ids,
-                artifact_type=ArtifactType.VOICE_OVERVIEW.value,
-                prompt=request_prompt,
-            )
+            # 0. Fetch the artifact up front so we can check for a cached
+            # evidence pack from a previously-failed attempt.
+            artifact = await repo.get_by_id(artifact_id, notebook_id, user_id)
+            if not artifact:
+                logger.error(f"Artifact {artifact_id} not found when starting voice overview task")
+                return
 
-            # 2. Compress Evidence
-            llm = get_llm()
-            compressor = ArtifactEvidenceCompressor(llm)
-            try:
-                evidence_pack = await compressor.compress(
+            cached_pack = artifact.evidence_pack_json
+            context_metadata: dict[str, Any] = dict(artifact.context_metadata or {})
+
+            if cached_pack:
+                logger.info(
+                    f"Resuming voice overview artifact {artifact_id} from cached evidence pack "
+                    f"(skipping context build + compression)"
+                )
+                evidence_pack_json = json.dumps(cached_pack, indent=2)
+                llm = get_llm()
+            else:
+                # 1. Build Context (reuses the same artifact-aware retrieval pipeline)
+                context_result = ArtifactContextBuilder.build_context(
+                    user_id=user_id,
+                    resolved_source_ids=resolved_ids,
                     artifact_type=ArtifactType.VOICE_OVERVIEW.value,
-                    context_text=context_result.context_text,
                     prompt=request_prompt,
                 )
-                evidence_pack_json = json.dumps(evidence_pack.model_dump(), indent=2)
-            except Exception as e:
-                logger.warning(f"Evidence compression failed for voice overview: {e}")
-                evidence_pack_json = context_result.context_text
+
+                # 2. Compress Evidence
+                llm = get_llm()
+                compressor = ArtifactEvidenceCompressor(llm)
+                try:
+                    evidence_pack = await compressor.compress(
+                        artifact_type=ArtifactType.VOICE_OVERVIEW.value,
+                        context_text=context_result.context_text,
+                        prompt=request_prompt,
+                    )
+                    evidence_pack_dict = evidence_pack.model_dump()
+                    evidence_pack_json = json.dumps(evidence_pack_dict, indent=2)
+                except Exception as e:
+                    logger.warning(f"Evidence compression failed for voice overview: {e}")
+                    evidence_pack_dict = None
+                    evidence_pack_json = context_result.context_text
+
+                context_metadata = {
+                    "mode_used": context_result.mode_used,
+                    "total_chunks": context_result.total_chunks,
+                    "total_estimated_tokens": context_result.total_estimated_tokens,
+                }
+
+                # Persist the evidence pack before attempting script generation/TTS,
+                # so a failure further down the pipeline (script gen, TTS, upload)
+                # can be retried without re-running retrieval or compression.
+                if evidence_pack_dict:
+                    artifact.evidence_pack_json = evidence_pack_dict
+                artifact.context_metadata = context_metadata
+                artifact = await repo.update(artifact)
 
             # 3. Build Prompt & Generate the Dialogue Script
             generation_prompt = ArtifactPromptBuilder.build_generation_prompt(
@@ -368,11 +439,11 @@ async def run_voice_overview_generation_task(
 
             # 5. Upload to storage (ImageKit by default, per app config)
             storage = get_storage_provider()
-            file_name = f"voice_overview_{artifact_id}.mp3"
+            file_name = f"{artifact_id}.mp3"
             upload_result = storage.upload_file(
                 file_path=local_audio_path,
                 file_name=file_name,
-                folder="/voice-overviews",
+                folder=f"sources/{user_id}/voice_overviews",
             )
 
             # 6. Persist success — audio metadata is nested inside content_json
@@ -391,15 +462,17 @@ async def run_voice_overview_generation_task(
             artifact = await repo.get_by_id(artifact_id, notebook_id, user_id)
             if artifact:
                 artifact.title = title
-                artifact.content_json = stored_content.model_dump()
-                artifact.status = ArtifactStatus.READY
-                artifact.context_metadata = {
-                    "mode_used": context_result.mode_used,
-                    "total_chunks": context_result.total_chunks,
-                    "total_estimated_tokens": context_result.total_estimated_tokens,
+                context_metadata = {
+                    **context_metadata,
                     "dialogue_line_count": audio_result.line_count,
                 }
-                await repo.update(artifact)
+                artifact.context_metadata = context_metadata
+                # update_content also clears evidence_pack_json now that it's no longer needed.
+                await repo.update_content(
+                    artifact,
+                    content=stored_content.model_dump(),
+                    status=ArtifactStatus.READY,
+                )
                 logger.info(
                     f"Voice overview generation complete for artifact {artifact_id} "
                     f"({audio_result.duration_seconds}s, {audio_result.line_count} lines)"

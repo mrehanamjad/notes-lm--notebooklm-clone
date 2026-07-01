@@ -1,13 +1,15 @@
 # repository.py
 """Artifact repository with CRUD operations."""
 
+from app.features.artifacts.schema import ArtifactShortResponse
 import uuid
-from typing import Optional, List
+from typing import Optional, List, cast
 from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.engine import CursorResult 
 
-from app.features.artifacts.model import Artifact
-from app.features.artifacts.schema import ArtifactType, ArtifactStatus
+from app.features.artifacts.model import Artifact, ArtifactStatus
+from app.features.artifacts.schema import ArtifactType
 
 
 class ArtifactRepository:
@@ -49,9 +51,19 @@ class ArtifactRepository:
         status: Optional[ArtifactStatus] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
-    ) -> List[Artifact]:
+    ) -> List[ArtifactShortResponse]:
         """List artifacts for a notebook with optional filters."""
-        query = select(Artifact).where(
+        # Select only the fields you need
+        query = select(
+            Artifact.id,
+            Artifact.notebook_id,
+            Artifact.user_id,
+            Artifact.artifact_type,
+            Artifact.status,
+            Artifact.title,
+            Artifact.created_at,
+            Artifact.updated_at
+        ).where(
             Artifact.notebook_id == notebook_id,
             Artifact.user_id == user_id,
         )
@@ -70,7 +82,22 @@ class ArtifactRepository:
             query = query.offset(offset)
         
         result = await self.db.execute(query)
-        return list(result.scalars().all())
+        rows = result.all()
+        
+        # Convert to response model
+        return [
+            ArtifactShortResponse(
+                id=row.id,
+                notebook_id=row.notebook_id,
+                user_id=row.user_id,
+                artifact_type=row.artifact_type,
+                status=row.status,
+                title=row.title,
+                created_at=row.created_at,
+                updated_at=row.updated_at
+            )
+            for row in rows
+        ]
 
     async def count_by_notebook(
         self, 
@@ -141,9 +168,9 @@ class ArtifactRepository:
         error_message: Optional[str] = None
     ) -> Artifact:
         """Helper to quickly update just the status and optional error."""
-        artifact.status = status
+        artifact.status = status # type: ignore
         if error_message:
-            artifact.error_message = error_message
+            artifact.error_message = error_message # type: ignore
         
         self.db.add(artifact)
         await self.db.commit()
@@ -156,9 +183,35 @@ class ArtifactRepository:
         content: dict,
         status: ArtifactStatus = ArtifactStatus.READY,
     ) -> Artifact:
-        """Update artifact content and status."""
-        artifact.content_json = content
-        artifact.status = status
+        """
+        Update artifact with final generated content and mark READY.
+
+        Also clears evidence_pack_json: once final content has been generated
+        successfully, the cached evidence pack is no longer needed and is
+        dropped so it doesn't take up storage or get reused stale.
+        """
+        artifact.content_json = content # type: ignore
+        artifact.status = status # type: ignore
+        artifact.evidence_pack_json = None # type: ignore
+        self.db.add(artifact)
+        await self.db.commit()
+        await self.db.refresh(artifact)
+        return artifact
+
+    async def update_evidence_pack(
+        self,
+        artifact: Artifact,
+        evidence_pack: dict,
+    ) -> Artifact:
+        """
+        Persist the compressed evidence pack for an artifact without touching
+        its status or final content.
+
+        Called right after evidence compression succeeds, so that a later
+        retry (e.g. after a generation-step failure) can skip vector search +
+        LLM compression entirely and resume directly from content generation.
+        """
+        artifact.evidence_pack_json = evidence_pack # type: ignore
         self.db.add(artifact)
         await self.db.commit()
         await self.db.refresh(artifact)
@@ -184,7 +237,8 @@ class ArtifactRepository:
         )
         result = await self.db.execute(query)
         await self.db.commit()
-        return result.rowcount
+        cursor_results = cast(CursorResult, result)
+        return cursor_results.rowcount
 
     # ── Bulk Operations ────────────────────────────────────────────────────────
     

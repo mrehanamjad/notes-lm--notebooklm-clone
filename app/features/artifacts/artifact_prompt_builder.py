@@ -1,4 +1,3 @@
-
 """Prompt builder for evidence compression and artifact generation."""
 
 from __future__ import annotations
@@ -116,6 +115,8 @@ Source context:
             "mindmap": ArtifactPromptBuilder._build_mindmap_prompt,
             "slide_deck": ArtifactPromptBuilder._build_slide_deck_prompt,
             "voice_overview": ArtifactPromptBuilder._build_voice_overview_prompt,
+            "report": ArtifactPromptBuilder._build_report_prompt,
+            "datatable": ArtifactPromptBuilder._build_datatable_prompt,
         }
 
         builder = prompt_builders.get(artifact_type)
@@ -332,6 +333,84 @@ Rules:
 - Group related concepts logically under their appropriate parent nodes.
 - Avoid creating too many shallow, redundant nodes that don't add structural value.
 - Stay strictly grounded in the provided text.
+
+Evidence pack:
+{evidence_pack_json}
+""".strip()
+
+    @staticmethod
+    def _build_report_prompt(
+        evidence_pack_json: str,
+        prompt: str | None,
+        options: Dict[str, Any],
+    ) -> str:
+        """Build prompt for structured analytical report generation."""
+        length = options.get("length", "medium")
+
+        section_guidance = {
+            "short": "Generate 2-3 focused sections.",
+            "medium": "Generate 4-6 sections.",
+            "large": "Generate 7-9 in-depth sections.",
+        }.get(length, "Generate 4-6 sections.")
+
+        return f"""
+You are generating a grounded analytical report from an evidence pack.
+
+Goal:
+- Write a clear, professional report that presents findings from the source material.
+- Use ONLY the evidence pack. Do not invent facts, numbers, or claims.
+- Structure the report so a reader can quickly grasp the key findings and conclusion.
+
+User request: {prompt or "N/A"}
+Report length: {length}
+
+Rules:
+- {section_guidance}
+- Start with a concise executive summary (2-4 sentences) capturing the report's core findings.
+- Each section must have a clear heading and a well-written body paragraph; add bullet points
+  only where they genuinely clarify a list of items, steps, or comparisons.
+- Extract the most important "key findings" as a separate top-level list of concise statements.
+- End with a conclusion paragraph that synthesizes the findings into a clear takeaway.
+- Keep all content strictly grounded in the provided evidence pack.
+- Use a neutral, professional tone; avoid filler and conversational language.
+
+Evidence pack:
+{evidence_pack_json}
+""".strip()
+
+    @staticmethod
+    def _build_datatable_prompt(
+        evidence_pack_json: str,
+        prompt: str | None,
+        options: Dict[str, Any],
+    ) -> str:
+        """Build prompt for structured data table generation."""
+        max_rows = int(options.get("max_rows", 15))
+
+        return f"""
+You are extracting a grounded, structured data table from an evidence pack.
+
+Goal:
+- Identify the most relevant structured/comparable data in the evidence pack
+  (numbers, named entities, categories, dates, metrics, comparisons, etc.).
+- Organize that data into ONE clean table with consistent columns.
+- Use ONLY information from the evidence pack. Do not invent values, numbers, or rows.
+
+User request: {prompt or "N/A"}
+Maximum rows: {max_rows}
+
+Rules:
+- Define between 2 and 6 columns. Each column needs a short, clear "name" and a "type"
+  of exactly one of: "string", "number", "date", "boolean".
+- Generate at most {max_rows} rows. Fewer rows are fine if the evidence pack doesn't support more.
+- Every row must be a list of cell values in the SAME ORDER as the columns, with one
+  value per column (use null if a specific cell value is genuinely not available).
+- Keep numeric values as actual numbers (not strings) when the column type is "number".
+- Give the table a concise, descriptive title and a one-sentence description of what it shows.
+- Optionally include a short list of "notes" highlighting any interesting patterns, gaps,
+  or insights visible in the data — grounded strictly in the evidence pack.
+- If the evidence pack does not contain enough structured data for a meaningful table,
+  build the best reasonable table from whatever concrete facts/figures are available.
 
 Evidence pack:
 {evidence_pack_json}
@@ -649,6 +728,7 @@ Content:
 ]
 
 Layout Guidelines:
+- Every slide must have a title
 - Paragraphs: 60-140 words.
 - Bullet lists: 3-7 bullets.
 - Cards: concise title and short text.
@@ -656,6 +736,7 @@ Layout Guidelines:
 - Prefer cards for grouped ideas or comparisons.
 - Prefer tables only for structured comparisons.
 - Keep every slide visually balanced and concise.
+
 
 Evidence Pack:
 {evidence_pack_json}
@@ -740,6 +821,8 @@ Evidence pack:
             "mindmap": "Hierarchical concept map",
             "slide_deck": "Presentation slide deck outline",
             "voice_overview": "Two-host podcast-style voice overview discussion",
+            "report": "Structured analytical report with findings and conclusion",
+            "datatable": "Structured data table extracted from source material",
         }
         return descriptions.get(artifact_type, "Learning artifact")
 
@@ -755,6 +838,8 @@ Evidence pack:
             "mindmap": "Create a hierarchical structure that shows relationships between concepts.",
             "slide_deck": "Create a logical flow that tells a story. Each slide should have a clear purpose.",
             "voice_overview": "Write a natural two-host spoken conversation, not a summary read aloud.",
+            "report": "Write a professional, well-structured report with clear findings and a conclusion.",
+            "datatable": "Extract structured, comparable data into a single clean, consistent table.",
         }
         return instructions.get(artifact_type, "Generate a high-quality learning artifact.")
 

@@ -1,4 +1,3 @@
-
 """Artifact service — orchestrates source resolution, context building, compression, generation, and persistence."""
 
 import uuid
@@ -27,6 +26,8 @@ from app.features.artifacts.schema import (
     MindMapCreateRequest,
     SlideDeckCreateRequest,
     AudioOverviewCreateRequest,
+    ReportCreateRequest,
+    DataTableCreateRequest,
     SourceFilterInfo,
     ArtifactResponse,
     ArtifactListResponse,
@@ -191,6 +192,22 @@ class ArtifactService:
         return await self._create_processing_artifact(
             notebook_id, user_id, ArtifactType.VOICE_OVERVIEW, request, options, background_tasks
         )
+
+    async def create_report(
+        self, notebook_id: uuid.UUID, user_id: uuid.UUID, request: ReportCreateRequest, background_tasks: BackgroundTasks
+    ) -> Artifact:
+        options = {"length": request.length.value}
+        return await self._create_processing_artifact(
+            notebook_id, user_id, ArtifactType.REPORT, request, options, background_tasks
+        )
+
+    async def create_datatable(
+        self, notebook_id: uuid.UUID, user_id: uuid.UUID, request: DataTableCreateRequest, background_tasks: BackgroundTasks
+    ) -> Artifact:
+        options = {"max_rows": request.max_rows}
+        return await self._create_processing_artifact(
+            notebook_id, user_id, ArtifactType.DATATABLE, request, options, background_tasks
+        )
     
     async def retry_artifact_generation(
         self,
@@ -223,7 +240,11 @@ class ArtifactService:
             resolved_ids=artifact.included_sources
         )
 
-        logger.info(f"Retrying generation for artifact {artifact_id}")
+        resuming_from_cache = bool(artifact.evidence_pack_json)
+        logger.info(
+            f"Retrying generation for artifact {artifact_id} "
+            f"({'resuming from cached evidence pack' if resuming_from_cache else 'starting from scratch'})"
+        )
         return artifact
 
     # ── Read / Delete ─────────────────────────────────────────────────────────────
@@ -240,20 +261,32 @@ class ArtifactService:
         """List artifacts for a notebook with optional filters."""
         await self.notebook_service.get_notebook(notebook_id, user_id)
         
+        # This now returns List[ArtifactShortResponse]
         artifacts = await self.artifact_repo.list_by_notebook(
-            notebook_id, user_id, artifact_type=artifact_type, status=status_filter, limit=limit, offset=offset
-        )
-        total = await self.artifact_repo.count_by_notebook(
-            notebook_id, user_id, artifact_type=artifact_type, status=status_filter
+            notebook_id, 
+            user_id, 
+            artifact_type=artifact_type, 
+            status=status_filter, 
+            limit=limit, 
+            offset=offset
         )
         
+        total = await self.artifact_repo.count_by_notebook(
+            notebook_id, 
+            user_id, 
+            artifact_type=artifact_type, 
+            status=status_filter
+        )
+        
+        # Return with short responses - no need to validate again
         return ArtifactListResponse(
-            artifacts=[ArtifactResponse.model_validate(a) for a in artifacts],
+            artifacts=artifacts,  # Already ArtifactShortResponse objects
             total=total,
             limit=limit,
             offset=offset,
         )
 
+        
     async def get_artifact(
         self, notebook_id: uuid.UUID, artifact_id: uuid.UUID, user_id: uuid.UUID
     ) -> Artifact:
@@ -267,44 +300,88 @@ class ArtifactService:
     async def delete_artifact(
         self, notebook_id: uuid.UUID, artifact_id: uuid.UUID, user_id: uuid.UUID
     ) -> None:
-        """Delete a single artifact, cleaning up any uploaded audio file first."""
+        """Delete a single artifact, cleaning up its ImageKit audio file first if applicable."""
         artifact = await self.get_artifact(notebook_id, artifact_id, user_id)
-        self._cleanup_audio_file(artifact)
+
+        file_id = self._extract_audio_file_id(artifact)
+        if file_id:
+            self._delete_audio_file(file_id, artifact.id)
+
         await self.artifact_repo.delete(artifact)
         logger.info(f"Artifact deleted: id={artifact_id}, notebook={notebook_id}")
 
     async def delete_all_artifacts(
         self, notebook_id: uuid.UUID, user_id: uuid.UUID
     ) -> None:
-        """Delete all artifacts for a notebook, cleaning up any uploaded audio files first."""
+        """Delete all artifacts for a notebook.
+
+        Storage cleanup strategy:
+        - Collects all audio_file_ids from every VOICE_OVERVIEW artifact first.
+        - If there is more than one, issues a single bulk delete_many_files call
+          instead of N individual deletes.
+        - If there is exactly one, uses the regular delete_file call.
+        - DB rows are deleted regardless of whether storage cleanup succeeded
+          (storage is best-effort; we never block DB cleanup on a storage error).
+        """
         await self.notebook_service.get_notebook(notebook_id, user_id)
 
+        # Collect all audio file IDs from VOICE_OVERVIEW artifacts in one query.
         audio_artifacts = await self.artifact_repo.list_by_notebook(
             notebook_id, user_id, artifact_type=ArtifactType.VOICE_OVERVIEW
         )
-        for artifact in audio_artifacts:
-            self._cleanup_audio_file(artifact)
+
+        file_ids: list[str] = [
+            fid
+            for a in audio_artifacts
+            if (fid := self._extract_audio_file_id(a))
+        ]
+
+        if file_ids:
+            try:
+                storage = get_storage_provider()
+                if len(file_ids) == 1:
+                    storage.delete_file(file_ids[0])
+                    logger.info(f"Storage: deleted 1 voice-overview file for notebook={notebook_id}")
+                else:
+                    storage.delete_many_files(file_ids)
+                    logger.info(
+                        f"Storage: bulk-deleted {len(file_ids)} voice-overview files "
+                        f"for notebook={notebook_id}"
+                    )
+            except Exception as e:
+                # Best-effort — log and continue so DB rows are still cleaned up.
+                logger.warning(
+                    f"Storage cleanup failed for notebook={notebook_id} "
+                    f"({len(file_ids)} file(s)); proceeding with DB delete. Error: {e}"
+                )
 
         count = await self.artifact_repo.delete_by_notebook(notebook_id, user_id)
-        logger.info(f"Deleted {count} artifacts for notebook={notebook_id}")
+        logger.info(f"Deleted {count} artifact rows for notebook={notebook_id}")
+
+    # ── Storage helpers ────────────────────────────────────────────────────────
 
     @staticmethod
-    def _cleanup_audio_file(artifact: Artifact) -> None:
-        """Best-effort deletion of an artifact's uploaded audio file from storage.
+    def _extract_audio_file_id(artifact: Artifact) -> str | None:
+        """
+        Return the ImageKit file_id for a VOICE_OVERVIEW artifact, or None.
 
-        audio_file_id has no dedicated column; it lives nested at
-        content_json["audio"]["audio_file_id"] for VOICE_OVERVIEW artifacts.
+        The file_id lives at content_json["audio"]["audio_file_id"] — there is
+        no dedicated DB column for it.  Returns None for non-audio artifact types
+        and for audio artifacts whose file has not been uploaded yet (e.g. still
+        PROCESSING or ERROR before upload step).
         """
         if artifact.artifact_type != ArtifactType.VOICE_OVERVIEW:
-            return
-        audio_file_id = ((artifact.content_json or {}).get("audio") or {}).get("audio_file_id")
-        if not audio_file_id:
-            return
+            return None
+        return ((artifact.content_json or {}).get("audio") or {}).get("audio_file_id")
+
+    @staticmethod
+    def _delete_audio_file(file_id: str, artifact_id: uuid.UUID) -> None:
+        """Best-effort single-file deletion from storage. Never raises."""
         try:
             storage = get_storage_provider()
-            storage.delete_file(audio_file_id)
+            storage.delete_file(file_id)
         except Exception as e:
             logger.warning(
-                f"Failed to delete audio file for artifact {artifact.id} "
-                f"(file_id={audio_file_id}): {e}"
+                f"Storage: failed to delete audio file for artifact {artifact_id} "
+                f"(file_id={file_id}): {e}"
             )

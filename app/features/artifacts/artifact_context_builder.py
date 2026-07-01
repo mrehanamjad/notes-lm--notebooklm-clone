@@ -59,7 +59,7 @@ from app.core.config import settings
 from app.core.logger import logger
 
 # ── Unified Schema Imports ───────────────────────────────────────────────────
-from app.features.artifacts.schema import ArtifactType, ArtifactSourceRef
+from app.features.artifacts.schema import ArtifactSourceRef
 
 @dataclass
 class ContextResult:
@@ -273,6 +273,39 @@ ARTIFACT_CONFIGS: Dict[str, ArtifactRetrievalConfig] = {
         prefer_summary_like_chunks=True,
         prefer_fact_density=True,
     ),
+    # Report wants broad, well-grounded coverage: explanatory passages, facts,
+    # and tables, since it needs to support findings/conclusions like a study guide.
+    "report": ArtifactRetrievalConfig(
+        artifact_type="report",
+        semantic_k=14,
+        coverage_k_per_source=2,
+        final_chunk_target=10,
+        focused_semantic_ratio=0.65,
+        broad_semantic_ratio=0.45,
+        max_chunks_per_source=2,
+        max_table_chunks_per_source=1,
+        max_context_tokens=3000,
+        max_context_chars=17000,
+        prefer_tables=True,
+        prefer_fact_density=True,
+        prefer_explanatory_chunks=True,
+        prefer_summary_like_chunks=True,
+    ),
+    # Data table wants dense, structured, numeric/tabular content above all else.
+    "datatable": ArtifactRetrievalConfig(
+        artifact_type="datatable",
+        semantic_k=12,
+        coverage_k_per_source=2,
+        final_chunk_target=8,
+        focused_semantic_ratio=0.70,
+        broad_semantic_ratio=0.45,
+        max_chunks_per_source=3,
+        max_table_chunks_per_source=2,
+        max_context_tokens=2400,
+        max_context_chars=14000,
+        prefer_tables=True,
+        prefer_fact_density=True,
+    ),
 }
 
 ARTIFACT_HINTS: Dict[str, str] = {
@@ -311,6 +344,14 @@ ARTIFACT_HINTS: Dict[str, str] = {
         "Retrieve main ideas, interesting facts, explanations, examples, and key "
         "takeaways useful for a natural spoken two-host podcast discussion."
     ),
+    "report": (
+        "Retrieve key facts, findings, explanatory passages, comparisons, tables, "
+        "and conclusions useful for writing a structured analytical report."
+    ),
+    "datatable": (
+        "Retrieve numeric data, structured facts, tables, lists of comparable items, "
+        "and figures useful for building a structured data table."
+    ),
 }
 
 class ArtifactContextBuilder:
@@ -329,7 +370,7 @@ class ArtifactContextBuilder:
     def build_context(
         user_id: uuid.UUID,
         resolved_source_ids: List[str],
-        artifact_type: ArtifactType = "artifact",
+        artifact_type: str = "artifact",
         prompt: str | None = None,
         max_context_tokens: int | None = None,
         max_context_chars: int | None = None,

@@ -8,3 +8,5 @@ backend.log
 test_*.py
 alembic/
 alembic.ini
+logs/
+local_model/

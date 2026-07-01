@@ -23,6 +23,8 @@ from app.features.artifacts.schema import (
     MindMapCreateRequest,
     SlideDeckCreateRequest,
     AudioOverviewCreateRequest,
+    ReportCreateRequest,
+    DataTableCreateRequest,
 )
 
 router = APIRouter(tags=["Artifacts"])
@@ -195,6 +197,48 @@ async def create_voice_overview(
         data=artifact,
     )
 
+
+@router.post(
+    "/{notebook_id}/artifacts/report", 
+    response_model=APIResponse[ArtifactResponse], 
+    status_code=status.HTTP_202_ACCEPTED
+)
+async def create_report(
+    notebook_id: uuid.UUID,
+    data: ReportCreateRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate a structured report artifact from notebook sources."""
+    service = ArtifactService(db)
+    artifact = await service.create_report(notebook_id, current_user.id, data, background_tasks)
+    return APIResponse(
+        message="Report artifact generation has been initiated successfully",
+        data=artifact,
+    )
+
+
+@router.post(
+    "/{notebook_id}/artifacts/datatable", 
+    response_model=APIResponse[ArtifactResponse], 
+    status_code=status.HTTP_202_ACCEPTED
+)
+async def create_datatable(
+    notebook_id: uuid.UUID,
+    data: DataTableCreateRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate a structured data table artifact from notebook sources."""
+    service = ArtifactService(db)
+    artifact = await service.create_datatable(notebook_id, current_user.id, data, background_tasks)
+    return APIResponse(
+        message="Data table artifact generation has been initiated successfully",
+        data=artifact,
+    )
+
 @router.post(
     "/{notebook_id}/artifacts/{artifact_id}/retry",
     response_model=APIResponse[ArtifactResponse],
@@ -211,7 +255,7 @@ async def retry_artifact(
     """Retry a failed artifact generation task."""
     service = ArtifactService(db)
     artifact = await service.retry_artifact_generation(
-        notebook_id, artifact_id, current_user.id, background_tasks
+        notebook_id, artifact_id, uuid.UUID(str(current_user.id)), background_tasks
     )
     return APIResponse(
         message="Artifact retry has been initiated successfully",
@@ -262,7 +306,7 @@ async def get_artifact(
 ):
     """Get a specific artifact by ID."""
     service = ArtifactService(db)
-    artifact = await service.get_artifact(notebook_id, artifact_id, current_user.id)
+    artifact = await service.get_artifact(notebook_id, artifact_id, uuid.UUID(str(current_user.id)))
     return APIResponse(
         message="Artifact fetched successfully",
         data=artifact,
@@ -281,7 +325,8 @@ async def delete_artifact(
 ):
     """Delete an artifact."""
     service = ArtifactService(db)
-    await service.delete_artifact(notebook_id, artifact_id, current_user.id)
+    await service.delete_artifact(notebook_id, artifact_id, uuid.UUID(str(current_user.id)))
+    return
 
 
 @router.delete(
@@ -295,4 +340,5 @@ async def delete_all_artifacts(
 ):
     """Delete all artifacts for a notebook."""
     service = ArtifactService(db)
-    await service.delete_all_artifacts(notebook_id, current_user.id)
+    await service.delete_all_artifacts(notebook_id, uuid.UUID(str(current_user.id)))
+    return

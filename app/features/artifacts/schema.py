@@ -1,4 +1,3 @@
-
 """Unified Pydantic schemas for API requests/responses, RAG metadata, and LLM structured output."""
 
 from __future__ import annotations
@@ -23,6 +22,8 @@ class ArtifactType(str, Enum):
     MINDMAP = "mindmap"
     SLIDE_DECK = "slide_deck"
     VOICE_OVERVIEW = "voice_overview"
+    REPORT = "report"
+    DATATABLE = "datatable"
     GENERIC = "artifact"
 
 
@@ -40,6 +41,12 @@ class QuizDifficulty(str, Enum):
 
 
 class StudyGuideSize(str, Enum):
+    SHORT = "short"
+    MEDIUM = "medium"
+    LARGE = "large"
+
+
+class ReportLength(str, Enum):
     SHORT = "short"
     MEDIUM = "medium"
     LARGE = "large"
@@ -89,6 +96,12 @@ class MindMapCreateRequest(BaseArtifactRequest):
 
 class SlideDeckCreateRequest(BaseArtifactRequest):
     number_of_slides: int = Field(8, ge=4, le=16, description="Number of slides")
+
+class ReportCreateRequest(BaseArtifactRequest):
+    length: ReportLength = Field(ReportLength.MEDIUM, description="Target length/depth of the report")
+
+class DataTableCreateRequest(BaseArtifactRequest):
+    max_rows: int = Field(15, ge=3, le=50, description="Maximum number of rows to include in the table")
 
 class AudioOverviewCreateRequest(BaseArtifactRequest):
     length: AudioOverviewLength = Field(
@@ -267,6 +280,38 @@ class SlideDeckArtifact(BaseModel):
     slides: List[SlideItem] = Field(default_factory=list, description="List of slides")
 
 
+# Report
+class ReportSection(BaseModel):
+    heading: str = Field(..., description="Section heading")
+    body: str = Field(..., description="Section body text, written in clear prose")
+    bullets: List[str] = Field(default_factory=list, description="Optional supporting bullet points")
+
+class ReportArtifact(BaseModel):
+    title: str = Field(..., description="A concise, professional title for the report")
+    executive_summary: str = Field(..., description="Short executive summary of the report's findings")
+    sections: List[ReportSection] = Field(default_factory=list, description="Main body sections of the report")
+    key_findings: List[str] = Field(default_factory=list, description="Most important findings or takeaways")
+    conclusion: str = Field(..., description="Closing conclusion or recommendation paragraph")
+
+
+# Data Table
+class DataTableColumn(BaseModel):
+    name: str = Field(..., description="Column header/name")
+    type: Literal["string", "number", "date", "boolean"] = Field(
+        "string", description="Data type of the column's values"
+    )
+
+class DataTableArtifact(BaseModel):
+    title: str = Field(..., description="A concise title describing what the table represents")
+    description: Optional[str] = Field(None, description="Short description of the table's contents")
+    columns: List[DataTableColumn] = Field(..., description="Ordered list of column definitions")
+    rows: List[List[Any]] = Field(
+        default_factory=list,
+        description="Table rows; each row is a list of cell values matching the order of `columns`",
+    )
+    notes: List[str] = Field(default_factory=list, description="Optional notes or insights about the data")
+
+
 # Audio Overview (two-host podcast script)
 class DialogueLine(BaseModel):
     speaker: str = Field(..., description="Which host speaks this line: 'host_1' or 'host_2'")
@@ -299,6 +344,16 @@ class AudioOverviewStoredContent(AudioOverviewArtifact):
 
 # ── API Response Schemas ─────────────────────────────────────────────────────
 
+class ArtifactShortResponse(BaseModel):
+    id: uuid.UUID
+    notebook_id: uuid.UUID
+    user_id: uuid.UUID
+    artifact_type: ArtifactType
+    status: ArtifactStatus
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
 class ArtifactResponse(BaseModel):
     """Response schema for artifact data (exposed to frontend)."""
     id: uuid.UUID
@@ -310,8 +365,8 @@ class ArtifactResponse(BaseModel):
     options_json: dict[str, Any]
     included_sources: List[str]
     content_json: dict[str, Any]
-    audio_url: Optional[str] = Field(None, description="Playable audio URL, only set for voice_overview artifacts")
-    audio_duration_seconds: Optional[float] = Field(None, description="Audio duration in seconds, only set for voice_overview artifacts")
+    # audio_url: Optional[str] = Field(None, description="Playable audio URL, only set for voice_overview artifacts")
+    # audio_duration_seconds: Optional[float] = Field(None, description="Audio duration in seconds, only set for voice_overview artifacts")
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime
@@ -333,7 +388,7 @@ class ArtifactResponse(BaseModel):
 
 class ArtifactListResponse(BaseModel):
     """Response schema for listing artifacts with pagination."""
-    artifacts: List[ArtifactResponse]
+    artifacts: List[ArtifactShortResponse]
     total: int
     limit: Optional[int] = None
     offset: Optional[int] = None
@@ -500,6 +555,20 @@ ARTIFACT_TYPE_INFO: Dict[str, Dict[str, Any]] = {
         "icon": "🎧",
         "default_options": {"length": "medium", "voice_style": "default"},
     },
+    ArtifactType.REPORT.value: {
+        "model": ReportArtifact,
+        "display_name": "Report",
+        "description": "Structured analytical report with findings and conclusion",
+        "icon": "📑",
+        "default_options": {"length": "medium"},
+    },
+    ArtifactType.DATATABLE.value: {
+        "model": DataTableArtifact,
+        "display_name": "Data Table",
+        "description": "Structured data table extracted from your sources",
+        "icon": "📋",
+        "default_options": {"max_rows": 15},
+    },
 }
 
 def get_artifact_model(artifact_type: str | ArtifactType):
@@ -538,3 +607,5 @@ QuizOutput = QuizArtifact
 FlashcardOutput = FlashcardsArtifact
 FAQOutput = FAQArtifact
 AudioOverviewOutput = AudioOverviewArtifact
+ReportOutput = ReportArtifact
+DataTableOutput = DataTableArtifact
